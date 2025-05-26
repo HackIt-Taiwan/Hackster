@@ -77,6 +77,7 @@ class ModerationModule(ModuleBase):
             
             # Register event listeners
             self.bot.add_listener(self.on_message, 'on_message')
+            self.bot.add_listener(self.on_message_edit, 'on_message_edit')
             self.bot.add_listener(self.on_member_join, 'on_member_join')
             
             logger.info("Moderation module setup completed")
@@ -98,6 +99,7 @@ class ModerationModule(ModuleBase):
                 
             # Remove event listeners
             self.bot.remove_listener(self.on_message, 'on_message')
+            self.bot.remove_listener(self.on_message_edit, 'on_message_edit')
             self.bot.remove_listener(self.on_member_join, 'on_member_join')
             
             logger.info("Moderation module teardown completed")
@@ -192,6 +194,28 @@ class ModerationModule(ModuleBase):
                             logger.info(f"Reapplied timeout to rejoining member {member.id}")
         except Exception as e:
             logger.error(f"Error handling member join {member.id}: {e}")
+    
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        """Handle message edit events for content moderation."""
+        # Skip if not enabled or if message is from bot
+        if not self.config.moderation.enabled or after.author.bot:
+            return
+            
+        # Skip if author has bypass role
+        if hasattr(after.author, 'roles'):
+            for role in after.author.roles:
+                if role.name in self.config.moderation.bypass_roles:
+                    return
+        
+        # Skip if content hasn't actually changed
+        if before.content == after.content and before.attachments == after.attachments:
+            return
+        
+        try:
+            logger.debug(f"檢測到訊息編輯，開始審核編輯後的內容 - 訊息ID: {after.id}，作者: {after.author.display_name}")
+            await self._moderate_message(after)
+        except Exception as e:
+            logger.error(f"Error moderating edited message {after.id}: {e}")
     
     async def _moderate_message(self, message: discord.Message):
         """Moderate a single message using comprehensive content analysis."""
