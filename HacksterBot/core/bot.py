@@ -148,7 +148,6 @@ class HacksterBot(commands.Bot):
             'moderation': self.config.moderation.enabled,
             'url_safety': self.config.url_safety.enabled,
             'welcome': self.config.welcome.enabled,
-            'invites': self.config.invite.enabled,
             'tickets': self.config.ticket.enabled,
         }
         

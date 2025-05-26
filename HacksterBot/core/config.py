@@ -43,6 +43,15 @@ class AIConfig:
     secondary_provider: str = field(default_factory=lambda: os.getenv("SECONDARY_MODEL_PROVIDER", "gemini"))
     secondary_model: str = field(default_factory=lambda: os.getenv("SECONDARY_MODEL_NAME", "gemini-2.0-flash"))
     
+    # Tools configuration
+    tools_enabled: bool = field(default_factory=lambda: os.getenv("AGENT_TOOLS_ENABLED", "true").lower() == "true")
+    allow_image_generation: bool = field(default_factory=lambda: os.getenv("AGENT_ALLOW_IMAGE_GENERATION", "true").lower() == "true")
+    
+    # Image generation configuration
+    image_generation_enabled: bool = field(default_factory=lambda: os.getenv("IMAGE_GENERATION_ENABLED", "true").lower() == "true")
+    image_generation_provider: str = field(default_factory=lambda: os.getenv("IMAGE_GENERATION_PROVIDER", "gemini"))
+    image_generation_model: str = field(default_factory=lambda: os.getenv("IMAGE_GENERATION_MODEL", "gemini-2.0-flash"))
+    
     # Azure OpenAI
     azure_api_key: Optional[str] = field(default_factory=lambda: os.getenv("AZURE_OPENAI_API_KEY"))
     azure_endpoint: Optional[str] = field(default_factory=lambda: os.getenv("AZURE_OPENAI_ENDPOINT"))
@@ -122,18 +131,6 @@ class WelcomeConfig:
 
 
 @dataclass
-class InviteConfig:
-    """Invite management configuration."""
-    enabled: bool = field(default_factory=lambda: os.getenv("INVITE_ENABLED", "true").lower() == "true")
-    allowed_roles: List[str] = field(default_factory=lambda: os.getenv("INVITE_ALLOWED_ROLES", "").split(",") if os.getenv("INVITE_ALLOWED_ROLES") else [])
-    list_page_size: int = field(default_factory=lambda: int(os.getenv("INVITE_LIST_PAGE_SIZE", "10")))
-    list_max_pages: int = field(default_factory=lambda: int(os.getenv("INVITE_LIST_MAX_PAGES", "5")))
-
-
-
-
-
-@dataclass
 class TicketConfig:
     """Ticket system configuration."""
     enabled: bool = field(default_factory=lambda: os.getenv("TICKET_ENABLED", "true").lower() == "true")
@@ -168,7 +165,6 @@ class Config:
     moderation: ModerationConfig = field(default_factory=ModerationConfig)
     url_safety: URLSafetyConfig = field(default_factory=URLSafetyConfig)
     welcome: WelcomeConfig = field(default_factory=WelcomeConfig)
-    invite: InviteConfig = field(default_factory=InviteConfig)
     ticket: TicketConfig = field(default_factory=TicketConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -226,7 +222,6 @@ def load_config() -> Config:
         
         url_safety=URLSafetyConfig(),
         welcome=WelcomeConfig(),
-        invite=InviteConfig(),
         ticket=TicketConfig(),
         search=SearchConfig(),
         logging=LoggingConfig(),

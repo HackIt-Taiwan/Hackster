@@ -141,8 +141,8 @@ class AIHandler:
             # Check rate limit
             if self._check_rate_limit(message.author.id):
                 self.logger.warning(f"Rate limit exceeded for user {message.author.id}")
-                await message.channel.send(
-                    f"{message.author.mention} 您發送訊息太頻繁了，請稍等一下再試。",
+                await message.reply(
+                    "您發送訊息太頻繁了，請稍等一下再試。",
                     delete_after=10
                 )
                 return
@@ -154,13 +154,19 @@ class AIHandler:
                 content = content.replace(f'<@!{self.bot.user.id}>', '').strip()
             
             if not content:
-                await message.channel.send("您想說什麼呢？", delete_after=10)
+                await message.reply("您想說什麼呢？", delete_after=10)
                 return
             
             # Start typing indicator
             async with message.channel.typing():
-                # Get AI response
+                # Send initial reply message that we'll edit with streaming content
+                reply_message = await message.reply("🤔 思考中...")
+                
+                # Get AI response with streaming
                 response_chunks = []
+                current_response = ""
+                last_update_time = asyncio.get_event_loop().time()
+                
                 async for chunk in self.get_streaming_response(
                     content,
                     user_id=message.author.id,
@@ -168,18 +174,39 @@ class AIHandler:
                     guild_id=getattr(message.guild, 'id', None)
                 ):
                     response_chunks.append(chunk)
+                    current_response = ''.join(response_chunks)
+                    
+                    # Update message every 0.5 seconds or when we have significant content
+                    current_time = asyncio.get_event_loop().time()
+                    if (current_time - last_update_time >= 0.5 or 
+                        len(current_response) % 100 == 0):  # Update every 100 characters too
+                        
+                        # Clean and truncate if needed for Discord limits
+                        display_response = self._clean_response(current_response)
+                        if len(display_response) > 1900:  # Leave buffer for "..."
+                            display_response = display_response[:1897] + "..."
+                        
+                        try:
+                            await reply_message.edit(content=display_response)
+                            last_update_time = current_time
+                        except discord.HTTPException:
+                            # If edit fails, continue collecting response
+                            pass
                 
-                response = ''.join(response_chunks)
-                
-                if response:
-                    # Split long messages
-                    await self._send_response(message.channel, response)
+                # Final update with complete response
+                final_response = ''.join(response_chunks)
+                if final_response:
+                    await self._send_streaming_response(reply_message, final_response)
                 else:
-                    await message.channel.send("抱歉，我無法處理您的請求。")
+                    await reply_message.edit(content="抱歉，我無法處理您的請求。")
                     
         except Exception as e:
             self.logger.error(f"Error handling message: {e}")
-            await message.channel.send("處理訊息時發生錯誤，請稍後再試。")
+            try:
+                await message.reply("處理訊息時發生錯誤，請稍後再試。")
+            except:
+                # If reply fails, try sending to channel
+                await message.channel.send("處理訊息時發生錯誤，請稍後再試。")
     
     async def _send_response(self, channel: discord.TextChannel, response: str) -> None:
         """
@@ -200,6 +227,47 @@ class AIHandler:
             for part in parts:
                 await channel.send(part)
                 await asyncio.sleep(0.5)  # Small delay between messages
+
+    async def _send_streaming_response(self, reply_message: discord.Message, response: str) -> None:
+        """
+        Send final AI response by editing the reply message, splitting if necessary.
+        
+        Args:
+            reply_message: Discord message to edit
+            response: Complete response text
+        """
+        # Clean the response
+        response = self._clean_response(response)
+        
+        # Discord message limit is 2000 characters
+        max_length = 1900  # Leave some buffer
+        
+        if len(response) <= max_length:
+            try:
+                await reply_message.edit(content=response)
+            except discord.HTTPException as e:
+                self.logger.warning(f"Failed to edit reply message: {e}")
+                # Fallback: send as new message
+                await reply_message.channel.send(response)
+        else:
+            # For long responses, edit the first message and send additional parts
+            parts = self._split_message(response, max_length)
+            
+            try:
+                # Edit the original reply with the first part
+                await reply_message.edit(content=parts[0])
+                
+                # Send remaining parts as follow-up messages
+                for part in parts[1:]:
+                    await reply_message.channel.send(part)
+                    await asyncio.sleep(0.5)  # Small delay between messages
+                    
+            except discord.HTTPException as e:
+                self.logger.warning(f"Failed to edit reply message: {e}")
+                # Fallback: send all parts as new messages
+                for part in parts:
+                    await reply_message.channel.send(part)
+                    await asyncio.sleep(0.5)
     
     def _split_message(self, text: str, max_length: int) -> list[str]:
         """

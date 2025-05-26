@@ -31,7 +31,7 @@ async def test_module_imports():
         'modules.ai',
         'modules.moderation',
         'modules.welcome',
-        'modules.invites',
+
 
         'modules.tickets'
     ]
@@ -72,7 +72,7 @@ async def test_config_loading():
         print(f"   ✅ Moderation enabled: {config.moderation.enabled}")
         print(f"   ✅ URL Safety enabled: {config.url_safety.enabled}")
         print(f"   ✅ Welcome enabled: {config.welcome.enabled}")
-        print(f"   ✅ Invite enabled: {config.invite.enabled}")
+
 
         print(f"   ✅ Ticket enabled: {config.ticket.enabled}")
         

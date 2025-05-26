@@ -34,7 +34,7 @@ HacksterBot/
 │   │   └── classifiers/
 │   ├── moderation/                # 審核系統
 │   ├── tickets/                   # 票務系統
-│   ├── invites/                   # 邀請管理
+
 │   ├── welcome/                   # 歡迎系統
 
 │   └── url_safety/                # URL 安全檢查
@@ -123,11 +123,6 @@ python main.py
 - **配置**：`TICKET_ENABLED`
 - **依賴**：無
 
-### 邀請模組 (`modules/invites`)
-- **功能**：邀請連結管理、使用統計
-- **配置**：`INVITE_ENABLED`
-- **依賴**：無
-
 ### 歡迎模組 (`modules/welcome`)
 - **功能**：新成員歡迎、重試機制
 - **配置**：`WELCOME_ENABLED`, `WELCOME_CHANNEL_IDS`
@@ -146,11 +141,6 @@ python main.py
 - 查看已載入模組：`/modules list`
 - 重新載入模組：`/modules reload <module_name>`
 - 模組狀態：`/modules status`
-
-### 邀請管理
-- 建立邀請：`/create_invite <name>`
-- 查看邀請：`/list_invites`
-- 刪除邀請：`/delete_invite <code>`
 
 ### 審核管理
 - 暫時禁言：`/timeout <user> <duration>`

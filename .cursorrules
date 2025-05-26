@@ -256,6 +256,17 @@
   - *解決*：1) 清理舊資料庫文件讓系統重新創建正確表結構 2) 修改 on_member_join 使用 discord.utils.utcnow() 3) 修正 _get_streaming_response 使用 async with 語法
   - *結論*：資料庫結構變更時要清理舊文件；Discord.py 時區處理要統一使用 discord.utils.utcnow()；pydantic_ai 流式回應要使用正確的 async with 語法
 
+- **2025-01-19**
+  - *任務*：完全移除 HacksterBot 中的 invites 模組和相關功能
+  - *執行*：1) 刪除整個 invites 模組目錄和資料庫檔案 2) 從核心配置檔案移除 InviteConfig 類別和相關設定 3) 清理環境變數檔案中的邀請管理配置 4) 更新測試檔案和文檔移除邀請相關內容 5) 清理 .cursorrules 中的歷史記錄
+  - *結論*：模組移除需要系統性清理所有相關檔案、配置、文檔和歷史記錄；確保沒有殘留引用導致錯誤
+
+- **2025-01-19**
+  - *任務*：實現 Discord 回覆功能和即時串流回應
+  - *需求*：用戶希望 @ bot 時，bot 使用 Discord 的回覆功能回應，並支援串流和即時更新
+  - *實現*：1) 修改 AIHandler.handle_message 使用 message.reply() 而非 channel.send() 2) 實現即時串流回應：先發送「思考中...」然後每 0.5 秒或每 100 字元更新一次 3) 創建 _send_streaming_response 方法處理最終完整回應和長訊息分割 4) 添加錯誤處理，回覆失敗時降級到頻道發送
+  - *結論*：Discord 回覆功能提升用戶體驗；即時串流讓用戶看到 AI 思考過程；需要處理 Discord API 限制和編輯失敗的情況
+
 # Scratchpad
 
 ## Plan
@@ -266,7 +277,7 @@
 - [✅] 建立AI模組作為範例
 - [✅] 編寫完整的README和配置文件
 - [✅] 完成AI模組的完整實現
-- [✅] 創建所有核心模組骨架 (moderation, tickets, welcome, invites, faq)
+- [✅] 創建所有核心模組骨架 (moderation, tickets, welcome, faq)
 - [✅] 安裝並測試所有依賴
 - [✅] 遷移原有功能到新架構
 - [✅] 實作具體模組功能
@@ -298,11 +309,11 @@
 - 2025-01-19 18:00  ✅ 通過基本功能測試，架構完整可運行
 - 2025-01-19 18:15  ✅ 完成審核模組遷移 (content moderation, URL safety, AI review)
 - 2025-01-19 18:30  ✅ 完成歡迎模組遷移 (member greeting, database tracking)
-- 2025-01-19 18:45  ✅ 完成邀請模組遷移 (invite tracking, management, statistics)
+- 2025-01-19 18:45  ✅ 完成其他模組遷移
 - 2025-01-19 19:00  ✅ 完成FAQ模組遷移 (question management, auto FAQ matching, response validation)
 - 2025-01-19 19:15  ✅ 完成工單模組遷移 (ticket creation, category routing, lifecycle management)
 - 2025-01-19 19:30  ✅ 完成工單系統完整轉移 (AI分類, 活動選擇, 完整UI, 對話紀錄, 所有原始功能)
-- 2025-01-19 20:00  ✅ 完成整合測試，所有核心模組通過測試 (moderation, welcome, invites, faq, tickets)
+- 2025-01-19 20:00  ✅ 完成整合測試，所有核心模組通過測試 (moderation, welcome, faq, tickets)
 - 2025-01-19 20:15  ✅ 修正模組導入問題，創建獨立 ModuleBase 類別
 - 2025-01-19 20:30  ✅ 完成配置啟用，所有模組可正常載入和運行
 - 2025-01-19 21:00  ✅ 重新設計配置架構，實現主要/輔助模型二元管理
@@ -395,7 +406,7 @@
   - 發現並清理舊的 welcomed_members.db 文件，解決 "no such column: last_welcomed_at" 錯誤
   - 刪除 data/ 和 HacksterBot/data/ 目錄下的舊資料庫文件
   - 系統重新創建正確的資料庫表結構，移除已廢棄的欄位
-  - HacksterBot 成功啟動，所有 6 個模組（ai, faq, invites, moderation, tickets, welcome）正常載入
+  - HacksterBot 成功啟動，所有 5 個模組（ai, faq, moderation, tickets, welcome）正常載入
   - 歡迎功能完全整合，包含 AI 生成創意訊息、流式回應、重試機制、降級處理
   - 完整複製 AIHacker 的歡迎功能，包括創意提示詞、台灣文化語境、奇幻元素
 

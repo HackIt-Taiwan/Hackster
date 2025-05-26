@@ -12,7 +12,7 @@ LOGS_DIR = os.getenv("LOGS_DIR", "logs")
 # Database paths
 MODERATION_DB_PATH = os.path.join(DATA_DIR, "moderation.db")
 WELCOME_DB_PATH = os.path.join(DATA_DIR, "welcomed_members.db")
-INVITE_DB_PATH = os.path.join(DATA_DIR, "invites.db")
+
 
 # URL Safety severity levels
 URL_SAFETY_SEVERITY_LEVELS = {
@@ -79,9 +79,7 @@ WELCOME_MESSAGE_TEMPLATE = "歡迎 {member} 加入我們的伺服器！✨"
 WELCOME_MAX_RETRIES = 3
 WELCOME_RETRY_INTERVAL_MINUTES = 5
 
-# Invite tracking
-INVITE_EXPIRY_DAYS = 30
-MAX_INVITES_PER_USER = 10
+
 
 # Search settings
 SEARCH_RESULTS_LIMIT = 5
