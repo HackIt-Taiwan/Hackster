@@ -15,6 +15,7 @@ from discord.ext import commands
 
 from .config import Config
 from .database import DatabaseManager, create_database_manager
+from .mongodb import MongoDBManager, create_mongodb_manager
 from .exceptions import BotError, ModuleError
 from .module_base import ModuleBase
 
@@ -36,6 +37,7 @@ class HacksterBot(commands.Bot):
         """
         self.config = config
         self.db_manager = create_database_manager(config)
+        self.mongodb_manager = create_mongodb_manager(config)
         self.modules: Dict[str, ModuleBase] = {}
         self.logger = logging.getLogger(__name__)
         
@@ -116,8 +118,8 @@ class HacksterBot(commands.Bot):
             
             all_modules.append(module_name)
         
-        # Sort modules to ensure AI module loads first
-        priority_modules = ['ai']
+        # Sort modules to ensure critical modules load first
+        priority_modules = ['ai', 'tickets_system']  # tickets_system must load before invites
         other_modules = [m for m in all_modules if m not in priority_modules]
         
         # Load priority modules first, then others
@@ -149,6 +151,9 @@ class HacksterBot(commands.Bot):
             'url_safety': self.config.url_safety.enabled,
             'welcome': self.config.welcome.enabled,
             'tickets': self.config.ticket.enabled,
+            'tickets_system': True,  # Centralized ticket system is always enabled
+            'invites': self.config.invite.enabled,
+            'blackjack': True,  # Blackjack game module is enabled by default
         }
         
         return module_config_map.get(module_name, True)
@@ -168,8 +173,15 @@ class HacksterBot(commands.Bot):
             module_path = f"modules.{module_name}"
             module = importlib.import_module(module_path)
             
-            # Look for setup function or Module class
-            if hasattr(module, 'setup'):
+            # Look for create_module function first (new format)
+            if hasattr(module, 'create_module'):
+                module_instance = module.create_module(self, self.config)
+                await module_instance.setup()
+                self.modules[module_name] = module_instance
+                self.logger.info(f"Loaded module: {module_name}")
+                
+            # Look for setup function or Module class (legacy formats)
+            elif hasattr(module, 'setup'):
                 # Check if setup function is async
                 if inspect.iscoroutinefunction(module.setup):
                     # Async setup function - call directly
@@ -190,7 +202,7 @@ class HacksterBot(commands.Bot):
                 self.logger.info(f"Loaded module: {module_name}")
                 
             else:
-                raise ModuleError(f"Module {module_name} has no setup function or Module class")
+                raise ModuleError(f"Module {module_name} has no create_module function, setup function or Module class")
                 
         except ImportError as e:
             raise ModuleError(f"Failed to import module {module_name}: {e}")
@@ -236,6 +248,14 @@ class HacksterBot(commands.Bot):
                 await module.teardown()
             except Exception as e:
                 self.logger.error(f"Error during module {module_name} teardown: {e}")
+        
+        # Close MongoDB connection
+        if hasattr(self, 'mongodb_manager') and self.mongodb_manager:
+            try:
+                self.mongodb_manager.disconnect()
+                self.logger.info("MongoDB connection closed")
+            except Exception as e:
+                self.logger.error(f"Error closing MongoDB connection: {e}")
         
         # Close Discord connection
         await super().close()

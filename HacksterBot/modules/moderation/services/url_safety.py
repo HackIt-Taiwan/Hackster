@@ -36,7 +36,7 @@ from config.settings import (
 )
 
 from .url_unshortener import URLUnshortener
-from .url_blacklist import URLBlacklist
+from .url_blacklist_mongo import URLBlacklistMongo
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +62,10 @@ class URLSafetyChecker:
         # Initialize URL unshortener
         self.url_unshortener = URLUnshortener()
         
-        # Initialize blacklist if enabled
+        # Initialize MongoDB blacklist if enabled
         self.blacklist = None
         if URL_BLACKLIST_ENABLED:
-            self.blacklist = URLBlacklist(URL_BLACKLIST_FILE)
+            self.blacklist = URLBlacklistMongo(config)
         
         # Rate limiting for APIs
         self.api_calls = []
@@ -564,15 +564,15 @@ class URLSafetyChecker:
             
             # Step 1: Check blacklist first (fastest)
             if self.blacklist:
-                blacklist_result = self.blacklist.is_blacklisted(url)
-                if blacklist_result:
+                if self.blacklist.is_url_blacklisted(url):
+                    threat_info = self.blacklist.get_threat_info(url)
                     result.update({
                         "is_unsafe": True,
-                        "message": f"URL in blacklist: {blacklist_result.get('reason', 'No reason provided')}",
-                        "threat_types": blacklist_result.get('threat_types', ['BLACKLISTED']),
-                        "severity": blacklist_result.get('severity', 8),
+                        "message": f"URL in blacklist: {threat_info.get('threat_types', ['BLACKLISTED']) if threat_info else 'Blacklisted URL'}",
+                        "threat_types": threat_info.get('threat_types', ['BLACKLISTED']) if threat_info else ['BLACKLISTED'],
+                        "severity": min(int(threat_info.get('threat_level', 0.8) * 10), 10) if threat_info else 8,
                         "method": "blacklist",
-                        "blacklist_info": blacklist_result
+                        "blacklist_info": threat_info
                     })
                     logger.warning(f"URL found in blacklist: {url}")
                     return True, result
@@ -591,13 +591,13 @@ class URLSafetyChecker:
                     
                     # Check blacklist again for the final URL
                     if self.blacklist:
-                        blacklist_result = self.blacklist.is_blacklisted(final_url)
-                        if blacklist_result:
+                        if self.blacklist.is_url_blacklisted(final_url):
+                            blacklist_result = self.blacklist.get_threat_info(final_url)
                             result.update({
                                 "is_unsafe": True,
-                                "message": f"Final URL in blacklist: {blacklist_result.get('reason', 'No reason provided')}",
-                                "threat_types": blacklist_result.get('threat_types', ['BLACKLISTED']),
-                                "severity": blacklist_result.get('severity', 8),
+                                "message": f"Final URL in blacklist: {blacklist_result.get('threat_types', ['BLACKLISTED']) if blacklist_result else 'Blacklisted URL'}",
+                                "threat_types": blacklist_result.get('threat_types', ['BLACKLISTED']) if blacklist_result else ['BLACKLISTED'],
+                                "severity": min(int(blacklist_result.get('threat_level', 0.8) * 10), 10) if blacklist_result else 8,
                                 "method": "blacklist",
                                 "blacklist_info": blacklist_result
                             })
@@ -621,11 +621,13 @@ class URLSafetyChecker:
                 
                 # Add to blacklist if unsafe
                 if safety_result.get('is_unsafe') and self.blacklist:
-                    self.blacklist.add_unsafe_result(
+                    threat_level = safety_result.get('threat_score', 0.8)
+                    threat_types = safety_result.get('threat_types', ['UNKNOWN'])
+                    self.blacklist.add_url(
                         url=final_url,
-                        safety_result=safety_result,
-                        original_url=url if url != final_url else None,
-                        blacklist_domain=URL_BLACKLIST_AUTO_DOMAIN
+                        threat_level=threat_level,
+                        threat_types=threat_types,
+                        update_if_exists=True
                     )
                     logger.info(f"Added unsafe URL to blacklist: {final_url}")
             else:

@@ -9,7 +9,11 @@ BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = os.getenv("DATA_DIR", "data")
 LOGS_DIR = os.getenv("LOGS_DIR", "logs")
 
-# Database paths
+# MongoDB configuration
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/hacksterbot")
+MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "hacksterbot")
+
+# Legacy database paths (deprecated - keeping for reference)
 MODERATION_DB_PATH = os.path.join(DATA_DIR, "moderation.db")
 WELCOME_DB_PATH = os.path.join(DATA_DIR, "welcomed_members.db")
 

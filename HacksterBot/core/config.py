@@ -26,10 +26,15 @@ class DiscordConfig:
 @dataclass
 class DatabaseConfig:
     """Database configuration."""
+    # Legacy SQLite support (deprecated)
     url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", "sqlite:///data/hacksterbot.db"))
     echo: bool = field(default_factory=lambda: os.getenv("DATABASE_ECHO", "false").lower() == "true")
     pool_size: int = 5
     max_overflow: int = 10
+    
+    # MongoDB configuration
+    mongodb_uri: str = field(default_factory=lambda: os.getenv("MONGODB_URI", "mongodb://localhost:27017/hacksterbot"))
+    mongodb_database: str = field(default_factory=lambda: os.getenv("MONGODB_DATABASE", "hacksterbot"))
 
 
 @dataclass
@@ -147,6 +152,28 @@ class SearchConfig:
 
 
 @dataclass
+class InviteConfig:
+    """Invite system configuration."""
+    enabled: bool = field(default_factory=lambda: os.getenv("INVITE_ENABLED", "true").lower() == "true")
+    track_invites: bool = field(default_factory=lambda: os.getenv("INVITE_TRACK_ENABLED", "true").lower() == "true")
+    rewards_enabled: bool = field(default_factory=lambda: os.getenv("INVITE_REWARDS_ENABLED", "true").lower() == "true")
+    notification_channel_id: int = field(default_factory=lambda: int(os.getenv("INVITE_NOTIFICATION_CHANNEL_ID", "0")))
+    leaderboard_channel_id: int = field(default_factory=lambda: int(os.getenv("INVITE_LEADERBOARD_CHANNEL_ID", "0")))
+    
+    # Event configuration
+    events_config_file: str = field(default_factory=lambda: os.getenv("INVITE_EVENTS_CONFIG", "data/invite_events.json"))
+    check_events_on_invite: bool = field(default_factory=lambda: os.getenv("INVITE_CHECK_EVENTS", "true").lower() == "true")
+    
+    # Ticket rewards
+    ticket_per_invite: int = field(default_factory=lambda: int(os.getenv("INVITE_TICKET_PER_INVITE", "1")))
+    ticket_type: str = field(default_factory=lambda: os.getenv("INVITE_TICKET_TYPE", "invite"))
+    
+    # Notifications
+    notify_on_invite: bool = field(default_factory=lambda: os.getenv("INVITE_NOTIFY_ON_INVITE", "true").lower() == "true")
+    notify_on_leave: bool = field(default_factory=lambda: os.getenv("INVITE_NOTIFY_ON_LEAVE", "true").lower() == "true")
+
+
+@dataclass
 class LoggingConfig:
     """Logging configuration."""
     level: str = "INFO"
@@ -167,6 +194,7 @@ class Config:
     welcome: WelcomeConfig = field(default_factory=WelcomeConfig)
     ticket: TicketConfig = field(default_factory=TicketConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
+    invite: InviteConfig = field(default_factory=InviteConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     
     # General settings

@@ -6,5 +6,7 @@ from .logging import setup_logging
 from .settings import *
 
 __all__ = [
-    "setup_logging"
+    "setup_logging",
+    "MONGODB_URI",
+    "MONGODB_DATABASE"
 ] 

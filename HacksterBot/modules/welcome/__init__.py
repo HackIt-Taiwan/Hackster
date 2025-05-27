@@ -15,7 +15,7 @@ import asyncio
 
 from core.module_base import ModuleBase
 from core.exceptions import ModuleError
-from .services.welcomed_members_db import WelcomedMembersDB
+from .services.welcomed_members_mongo import WelcomedMembersMongo
 from .services.welcome_handler import WelcomeHandler
 
 logger = logging.getLogger(__name__)
@@ -47,8 +47,8 @@ class WelcomeModule(ModuleBase):
                 logger.info("Welcome module is disabled")
                 return
                 
-            # Initialize database
-            self.welcomed_members_db = WelcomedMembersDB(self.config)
+            # Initialize MongoDB database
+            self.welcomed_members_db = WelcomedMembersMongo(self.config)
             
             # Initialize welcome handler
             self.welcome_handler = WelcomeHandler(self.bot, self.config, self.welcomed_members_db)

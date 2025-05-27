@@ -18,7 +18,7 @@ from core.exceptions import ModuleError
 from .services.content_moderator import ContentModerator
 from .services.url_safety import URLSafetyChecker
 from .services.moderation_queue import start_moderation_queue, get_moderation_queue
-from .services.moderation_db import ModerationDB
+from .services.moderation_mongo import ModerationMongo
 from .services.community_guidelines import format_mute_reason, get_guidelines_for_violations
 from .agents.moderation_review import agent_moderation_review, review_flagged_content
 from modules.ai.services.ai_select import get_agent
@@ -62,8 +62,8 @@ class ModerationModule(ModuleBase):
             if self.config.url_safety.enabled:
                 self.url_safety_checker = URLSafetyChecker(self.config)
             
-            # Initialize database
-            self.moderation_db = ModerationDB()
+            # Initialize MongoDB database
+            self.moderation_db = ModerationMongo(self.config)
             
             # Start moderation queue
             await start_moderation_queue(self.config)
@@ -164,6 +164,10 @@ class ModerationModule(ModuleBase):
         # Skip if not enabled or if message is from bot
         if not self.config.moderation.enabled or message.author.bot:
             return
+        
+        # Skip DM messages (private messages)
+        if isinstance(message.channel, discord.DMChannel):
+            return
             
         # Skip if author has bypass role
         if hasattr(message.author, 'roles'):
@@ -199,6 +203,10 @@ class ModerationModule(ModuleBase):
         """Handle message edit events for content moderation."""
         # Skip if not enabled or if message is from bot
         if not self.config.moderation.enabled or after.author.bot:
+            return
+        
+        # Skip DM messages (private messages)
+        if isinstance(after.channel, discord.DMChannel):
             return
             
         # Skip if author has bypass role

@@ -58,12 +58,15 @@ class Module(ModuleBase):
         if message.author.bot:
             return
         
-        # Check if bot is mentioned or this is a DM
-        bot_mentioned = self.bot.user in message.mentions
-        is_dm = isinstance(message.channel, discord.DMChannel)
+        # Skip DM messages (private messages)
+        if isinstance(message.channel, discord.DMChannel):
+            return
         
-        # Handle AI responses for mentions or DMs
-        if bot_mentioned or is_dm:
+        # Check if bot is mentioned
+        bot_mentioned = self.bot.user in message.mentions
+        
+        # Handle AI responses for mentions only (no DM responses)
+        if bot_mentioned:
             await self.ai_handler.handle_message(message)
     
     async def _on_message_edit(self, before, after):
