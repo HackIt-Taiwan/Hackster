@@ -6,10 +6,12 @@ This module provides comprehensive invite tracking functionality including:
 - Event-based reward system
 - Integration with centralized ticket system
 - Leaderboards and analytics
+- Daily reports with growth charts and leaderboards
 """
 import logging
 import discord
 from discord.ext import commands
+from discord import app_commands
 from typing import List, Optional, Dict, Any
 
 from core.module_base import ModuleBase
@@ -17,12 +19,13 @@ from core.exceptions import ModuleError
 from .services.invite_mongo import InviteMongo
 from .services.event_manager import EventManager
 from .services.invite_tracker import InviteTracker
+from .services.task_scheduler import TaskScheduler
 
 logger = logging.getLogger(__name__)
 
 
 class InviteModule(ModuleBase):
-    """Invite tracking module with event-based rewards."""
+    """Invite tracking module with event-based rewards and daily reports."""
     
     def __init__(self, bot, config):
         """
@@ -34,12 +37,13 @@ class InviteModule(ModuleBase):
         """
         super().__init__(bot, config)
         self.name = "invites"
-        self.description = "Invite tracking system with event rewards"
+        self.description = "Invite tracking system with event rewards and daily reports"
         
         # Initialize services
         self.invite_mongo = None
         self.event_manager = None
         self.invite_tracker = None
+        self.task_scheduler = None
         
     async def setup(self):
         """Set up the invite module."""
@@ -67,13 +71,16 @@ class InviteModule(ModuleBase):
                 self.bot, self.config, self.invite_mongo, self.event_manager
             )
             
+            # Initialize task scheduler for daily reports
+            self.task_scheduler = TaskScheduler(self.config, self.invite_mongo, self.bot)
+            
             # Register event listeners
             self.bot.add_listener(self.on_member_join, 'on_member_join')
             self.bot.add_listener(self.on_member_remove, 'on_member_remove')
             self.bot.add_listener(self.on_guild_join, 'on_guild_join')
             self.bot.add_listener(self.on_ready, 'on_ready')
             
-            # Register slash commands (removed tickets command)
+            # Register slash commands
             await self._register_commands()
             
             logger.info("Invite module setup completed")
@@ -85,6 +92,10 @@ class InviteModule(ModuleBase):
     async def teardown(self):
         """Clean up the invite module."""
         try:
+            # Stop task scheduler
+            if self.task_scheduler:
+                await self.task_scheduler.stop()
+            
             # Remove event listeners
             self.bot.remove_listener(self.on_member_join, 'on_member_join')
             self.bot.remove_listener(self.on_member_remove, 'on_member_remove')
@@ -100,6 +111,10 @@ class InviteModule(ModuleBase):
         """Handle bot ready event."""
         if self.invite_tracker:
             await self.invite_tracker.initialize_all_guilds()
+        
+        # Start task scheduler for daily reports
+        if self.task_scheduler:
+            await self.task_scheduler.start()
     
     async def on_guild_join(self, guild: discord.Guild):
         """Handle bot joining a new guild."""
@@ -147,6 +162,11 @@ class InviteModule(ModuleBase):
         async def stats_command(interaction: discord.Interaction):
             """Show server invite statistics."""
             await self._handle_stats_command(interaction)
+        
+        @self.bot.tree.command(name="daily_report", description="立即發送每日報告 (僅管理員)")
+        async def daily_report_command(interaction: discord.Interaction):
+            """Send daily report immediately (admin only)."""
+            await self._handle_daily_report_command(interaction)
     
     async def _handle_invites_command(self, interaction: discord.Interaction, user: discord.Member = None):
         """Handle invites command."""
@@ -303,6 +323,38 @@ class InviteModule(ModuleBase):
                     await interaction.response.send_message("查詢統計數據時發生錯誤", ephemeral=True)
                 else:
                     await interaction.followup.send("查詢統計數據時發生錯誤", ephemeral=True)
+            except Exception as followup_error:
+                logger.error(f"Error sending error message: {followup_error}")
+
+    async def _handle_daily_report_command(self, interaction: discord.Interaction):
+        """Handle daily report command (admin only)."""
+        try:
+            # Check permissions
+            if not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message("❌ 此指令僅限管理員使用", ephemeral=True)
+                return
+            
+            await interaction.response.defer(ephemeral=True)
+            
+            if not self.task_scheduler:
+                await interaction.followup.send("❌ 任務調度器未初始化", ephemeral=True)
+                return
+            
+            # Send test report
+            success = await self.task_scheduler.send_test_report(interaction.guild.id)
+            
+            if success:
+                await interaction.followup.send("✅ 每日報告已成功發送！", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ 發送每日報告失敗，請檢查配置或日誌", ephemeral=True)
+                
+        except Exception as e:
+            logger.error(f"Error in daily report command: {e}")
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ 發送每日報告時發生錯誤", ephemeral=True)
+                else:
+                    await interaction.followup.send("❌ 發送每日報告時發生錯誤", ephemeral=True)
             except Exception as followup_error:
                 logger.error(f"Error sending error message: {followup_error}")
 
