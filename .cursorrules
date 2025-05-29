@@ -366,6 +366,17 @@
   - *解決*：改用 `datetime.utcnow()` 作為 embed timestamp，讓 Discord 自動根據用戶本地時區顯示正確時間
   - *結論*：Discord embed timestamp 應該使用標準 UTC 時間，Discord 會自動轉換為用戶本地時區；手動時區轉換容易出錯，應該讓 Discord 處理時區顯示
 
+- **2025-01-19**
+  - *任務*：完成 HacksterBot 會議系統整合，實現 meetings 與 recording 模組的完整整合
+  - *實現*：1) 修改 meeting_manager.py 整合 recording 模組 API 2) 添加 Meeting 模型的錄製追蹤欄位 3) 實現會議開始時自動錄製、結束時停止錄製 4) 創建動態管理按鈕根據會議狀態顯示不同操作 5) 實現語音頻道空閒自動結束會議功能 6) 完成三階段會議系統開發：HackMeet 整合、會議預約系統、兩模組整合
+  - *結論*：模組間 API 整合要設計清晰的介面；動態 UI 比靜態按鈕提供更好的用戶體驗；自動化功能（如空閒結束）能提升系統實用性；階段性開發讓複雜系統更易管理
+
+- **2025-05-30**
+  - *任務*：修復 HacksterBot 錄音系統，實現真正的音軌分離錄音功能
+  - *問題*：1) 用戶反映 basic 錄音模式沒有聲音且功能不足 2) discord-ext-voice-recv 整合錯誤 "sink must be an AudioSink not AdvancedMultiTrackSink" 3) 中文字符編碼問題導致會議室名稱錯誤 4) 新版本 discord-ext-voice-recv API 變更導致 "write() takes 2 positional arguments but 3 were given" 錯誤 5) 會議記錄模板中的 \\n 沒有正確顯示為換行符
+  - *解決*：1) 完全重寫 meeting_recorder.py，正確實現 voice_recv.AudioSink 繼承 2) 修復中文字符問題，改用英文會議室名稱格式 "Meeting-%m%d-%H%M" 3) 實現真正的音軌分離功能，每個用戶獨立的 WAV 檔案 4) 添加高品質 48kHz 16-bit 立體聲錄音 5) 實現即時音頻包處理和完整的元數據生成 6) 移除所有 basic 模式代碼，專注於高級錄音功能 7) 升級到 discord-ext-voice-recv 最新版本 (0.5.0a165) 8) 修正 AudioSink.write() 方法簽名適配新 API (write(self, source, voice_data)) 9) 創建 _process_template 方法統一處理所有模板的換行符轉換，將字面上的 \\n 轉換為實際換行符
+  - *結論*：discord-ext-voice-recv 需要正確的 AudioSink 類繼承和 write 方法實現；音軌分離比混合錄音提供更好的後處理靈活性；中文字符在檔案路徑中容易導致編碼問題；真實的音頻錄音比模擬更有實用價值；用戶體驗要求完整功能而非妥協方案；API 升級時要注意方法簽名變更；模板字串中的換行符需要統一處理，從配置文件讀取的 \\n 需要轉換為實際換行符
+
 # Scratchpad
 
 🎉 **HacksterBot 專案已完成！**  
@@ -391,13 +402,69 @@
 - [x] 建立模組間正確的引用關係
 - [x] 票券撤銷使用標記而非刪除保持資料完整性
 
+## 🚀 **新重大任務：會議系統整合與開發**  
+📅 開始日期：2025-01-19  
+🎯 目標：整合 HackMeet-DiscordBot + 創建會議預約系統
+
+### 階段一：HackMeet-DiscordBot 整合 (會議錄製模組) ✅
+- [x] 分析 HackMeet-DiscordBot 現有功能和架構
+- [x] 從 pycord 轉換到 discord.py 
+- [x] 整合為 HacksterBot 的 `recording` 模組
+- [x] 保留完整功能：多機器人管理、會議室創建、threads、錄音軌
+- [x] 移除不需要的功能：STT、摘要生成、Google Drive 上傳
+- [x] 確保錄製 bot 與主 bot 分離
+- [x] 完成 RecordingConfig 配置整合
+- [x] 完成所有 recording 服務實現
+
+### 階段二：會議預約系統模組 (meetings 模組) ✅ **已完成**
+- [x] 創建 MeetingsConfig 配置
+- [x] 建立 MongoDB 模型：Meeting, MeetingAttendee, MeetingReminder, MeetingParseLog
+- [x] 創建會議模組主要架構 (meetings/__init__.py)
+- [x] 實現時間解析 AI 代理 (agents/time_parser.py)
+- [x] 創建會議調度器服務 (services/meeting_scheduler.py)
+- [x] 實現會議確認視圖 (views/meeting_confirmation_view.py)
+- [x] 實現出席管理視圖 (views/meeting_attendance_view.py)
+- [x] 實現提醒服務 (services/reminder_service.py)
+- [x] 實現會議管理器 (services/meeting_manager.py)
+- [x] 創建 `/meet` 指令與自然語言時間解析
+- [x] 會議邀約發布系統
+- [x] 自動提醒系統（24小時前、5分鐘前）
+- [x] 會議開始時自動創建語音頻道
+- [x] 會議管理功能（改約、新增/移除人員、更改標題、取消）
+
+### 階段三：兩模組整合 ✅ **已完成**
+- [x] meetings 模組調用 recording 模組
+- [x] 語音頻道創建後自動開始錄製
+- [x] 會議結束後錄製處理
+- [x] 動態管理按鈕根據會議狀態變化
+- [x] 語音頻道空閒自動結束會議
+
 ## 當前狀態
 - **系統狀態**: 穩定運行 ✅
-- **模組載入**: 7/7 模組正常 ✅  
+- **模組載入**: 8/8 模組正常 ✅ (新增 meetings)
 - **核心功能**: 全部測試通過 ✅
 - **資料庫**: MongoDB 完全整合 ✅
 - **導入系統**: 完全修復 ✅
 - **指令系統**: Discord 同步正常 ✅
+- **會議系統**: 三階段全部完成 ✅ **重大里程碑達成！**
+
+## Progress
+- 2025-01-19 14:30  📋 任務分析完成，開始階段一實作
+- 2025-01-19 14:45  ✅ HackMeet-DiscordBot 架構分析完成
+- 2025-01-19 15:30  ✅ 階段一 recording 模組完成
+- 2025-01-19 16:00  🔄 開始階段二 meetings 模組開發
+- 2025-01-19 16:30  ✅ 完成 MeetingsConfig 和 MongoDB 模型
+- 2025-01-19 18:00  ✅ 階段三兩模組整合完成，會議系統全面上線！
+
+🎉 **會議系統開發完成！**
+✅ HacksterBot 現在具備完整的會議管理功能：
+- 自然語言時間解析 (`/meet 明天下午2點`)
+- 會議確認與出席管理
+- 自動提醒系統 (24小時前、5分鐘前)
+- 語音頻道自動創建與管理
+- 多機器人錄製系統整合
+- 會議管理 (開始、結束、取消)
+- 自動空閒結束功能
 
 ## 範例（Example）
 
@@ -424,3 +491,54 @@
 ---
 
 > ***保持簡潔、即時更新，讓 .cursorrules 成為專案的「作業系統」。***
+
+🚀 **新重大任務：會議系統整合與開發**  
+📅 開始日期：2025-01-19  
+🎯 目標：整合 HackMeet-DiscordBot + 創建會議預約系統
+
+## 總體計劃
+### 階段一：HackMeet-DiscordBot 整合 (會議錄製模組)
+- [ ] 分析 HackMeet-DiscordBot 現有功能和架構
+- [ ] 從 pycord 轉換到 discord.py 
+- [ ] 整合為 HacksterBot 的 `recording` 模組
+- [ ] 保留完整功能：多機器人管理、會議室創建、threads、錄音軌
+- [ ] 移除不需要的功能：STT、摘要生成、Google Drive 上傳
+- [ ] 確保錄製 bot 與主 bot 分離
+
+### 階段二：會議預約系統模組 (meetings 模組)
+- [ ] 創建 `/meet` 指令與自然語言時間解析
+- [ ] AI 時間分析整合（可配置主要/輔助 AI）
+- [ ] 會議確認 embed 和用戶交互
+- [ ] 會議邀約發布系統
+- [ ] 出席管理（可出席/無法出席/待定）
+- [ ] 自動提醒系統（24小時前、5分鐘前）
+- [ ] 會議開始時自動創建語音頻道
+- [ ] 會議管理功能（改約、新增/移除人員、更改標題、取消）
+
+### 階段三：兩模組整合
+- [ ] meetings 模組調用 recording 模組
+- [ ] 語音頻道創建後自動開始錄製
+- [ ] 會議結束後錄製處理
+
+## Progress
+- 2025-01-19 14:30  📋 任務分析完成，開始階段一實作
+- 2025-01-19 14:45  ✅ HackMeet-DiscordBot 架構分析完成
+
+### HackMeet-DiscordBot 架構分析結果：
+**核心組件**：
+- `MultiBotManager`：管理多個錄製機器人實例
+- `MeetingBot`：單個錄製機器人，基於 pycord
+- `record_meeting.py`：處理音頻錄製邏輯
+- `forum.py`：Forum thread 管理
+- **多機器人架構**：透過 BOT_TOKENS 配置多個機器人輪流錄製
+
+**核心功能**：
+- 自動偵測進入「會議室」頻道觸發新會議
+- 創建語音頻道、Forum thread 記錄
+- MP3 音軌分離錄製（每個用戶獨立音軌）
+- 自動會議室清理機制
+
+**需移除功能**：STT、摘要生成、Google Drive 上傳
+
+## 當前執行階段
+🔄 **階段一進行中：開始創建 recording 模組**

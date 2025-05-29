@@ -154,6 +154,8 @@ class HacksterBot(commands.Bot):
             'tickets_system': True,  # Centralized ticket system is always enabled
             'invites': self.config.invite.enabled,
             'blackjack': True,  # Blackjack game module is enabled by default
+            'meetings': self.config.meetings.enabled,  # Meeting scheduling system
+            'recording': self.config.recording.enabled,  # Meeting recording system
         }
         
         return module_config_map.get(module_name, True)
@@ -175,7 +177,11 @@ class HacksterBot(commands.Bot):
             
             # Look for create_module function first (new format)
             if hasattr(module, 'create_module'):
-                module_instance = module.create_module(self, self.config)
+                # Check if create_module is async
+                if inspect.iscoroutinefunction(module.create_module):
+                    module_instance = await module.create_module(self, self.config)
+                else:
+                    module_instance = module.create_module(self, self.config)
                 await module_instance.setup()
                 self.modules[module_name] = module_instance
                 self.logger.info(f"Loaded module: {module_name}")

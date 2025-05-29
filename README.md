@@ -8,9 +8,10 @@
 - **AI 智慧對話**：支援多種 AI 服務 (Azure OpenAI, Gemini, Anthropic)
 - **內容審核**：自動檢測和處理不當內容
 - **票務系統**：完整的客服票券管理
+- **會議系統**：智慧會議安排與錄製管理
 - **邀請管理**：追蹤和管理伺服器邀請連結
 - **歡迎系統**：自動歡迎新成員
-
+- **遊戲功能**：內建 21 點等遊戲
 - **URL 安全檢查**：檢測惡意連結
 - **彈性配置**：透過環境變數輕鬆配置
 
@@ -34,9 +35,7 @@ HacksterBot/
 │   │   └── classifiers/
 │   ├── moderation/                # 審核系統
 │   ├── tickets/                   # 票務系統
-
 │   ├── welcome/                   # 歡迎系統
-
 │   └── url_safety/                # URL 安全檢查
 ├── config/                        # 配置文件
 │   ├── __init__.py
@@ -128,7 +127,30 @@ python main.py
 - **配置**：`WELCOME_ENABLED`, `WELCOME_CHANNEL_IDS`
 - **依賴**：無
 
+### 會議模組 (`modules/meetings`)
+- **功能**：自然語言會議安排、自動提醒、語音頻道管理、會議錄製
+- **配置**：`MEETINGS_ENABLED`, `MEETINGS_TIME_PARSER_AI_SERVICE`
+- **依賴**：AI API Keys (用於時間解析)
 
+### 錄製模組 (`modules/recording`)
+- **功能**：多機器人會議錄製、音軌分離、自動清理
+- **配置**：`RECORDING_BOT_TOKENS`
+- **依賴**：多個 Discord Bot Tokens
+
+### 邀請模組 (`modules/invites`)
+- **功能**：邀請追蹤統計、每日報告、成長圖表
+- **配置**：`INVITES_ENABLED`, `INVITES_DAILY_REPORTS_ENABLED`
+- **依賴**：無
+
+### 遊戲模組 (`modules/blackjack`)
+- **功能**：21點遊戲、統計追蹤、排行榜
+- **配置**：無特定配置
+- **依賴**：無
+
+### 票券系統模組 (`modules/tickets_system`)
+- **功能**：活動票券管理、獎勵系統
+- **配置**：無特定配置
+- **依賴**：無
 
 ### URL 安全模組 (`modules/url_safety`)
 - **功能**：惡意連結檢測、黑名單管理
@@ -136,6 +158,19 @@ python main.py
 - **依賴**：VirusTotal API
 
 ## 🎛 管理命令
+
+### 會議管理
+- 安排會議：`/meet <時間> <參與者> [標題] [描述]`
+- 查看會議：`/meetings`
+- 會議詳情：`/meeting_info <會議ID>`
+
+### 遊戲功能
+- 開始21點：`/blackjack`
+- 遊戲統計：`/bj_stats`
+- 重置遊戲：`/bj_reset`
+
+### 票券系統
+- 查看票券：`/tickets`
 
 ### 模組管理
 - 查看已載入模組：`/modules list`

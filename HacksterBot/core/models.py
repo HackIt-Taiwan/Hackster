@@ -348,10 +348,191 @@ class DailyNotification(Document):
         'collection': 'daily_notifications',
         'indexes': [
             ('user_id', 'guild_id', 'notification_type', 'date'),
-            'date',
             'last_sent_at'
         ]
     }
     
     def __str__(self):
-        return f"DailyNotification(user_id={self.user_id}, type={self.notification_type}, date={self.date})" 
+        return f"DailyNotification(user={self.user_id}, type={self.notification_type}, date={self.date})"
+
+
+class MeetingAttendee(EmbeddedDocument):
+    """
+    Embedded document for meeting attendees with their status.
+    """
+    user_id = IntField(required=True)
+    username = StringField(max_length=200)
+    status = StringField(max_length=20, default='pending',
+                        choices=['pending', 'attending', 'not_attending', 'maybe'])
+    responded_at = DateTimeField()
+    
+    def __str__(self):
+        return f"Attendee(user_id={self.user_id}, status={self.status})"
+
+
+class Meeting(Document):
+    """
+    Model for scheduled meetings.
+    """
+    guild_id = IntField(required=True)
+    organizer_id = IntField(required=True)
+    title = StringField(required=True, max_length=200)
+    description = StringField(max_length=1000)
+    
+    # Scheduling information
+    scheduled_time = DateTimeField(required=True)
+    timezone = StringField(max_length=50, default='Asia/Taipei')
+    duration_minutes = IntField(default=60)
+    
+    # Channel information
+    announcement_message_id = IntField()
+    announcement_channel_id = IntField()
+    voice_channel_id = IntField()
+    
+    # Status and management
+    status = StringField(max_length=20, default='scheduled',
+                        choices=['scheduled', 'started', 'ended', 'cancelled', 'rescheduled'])
+    
+    # Attendees
+    attendees = ListField(EmbeddedDocumentField(MeetingAttendee))
+    max_attendees = IntField()
+    
+    # Recording information  
+    recording_enabled = BooleanField(default=True)
+    recording_started = BooleanField(default=False)
+    recording_started_at = DateTimeField()
+    recording_stopped_at = DateTimeField()
+    recording_channel_id = IntField()
+    forum_post_id = IntField()
+    
+    # Reminder tracking
+    reminder_24h_sent = BooleanField(default=False)
+    reminder_5min_sent = BooleanField(default=False)
+    
+    # Timestamps
+    created_at = DateTimeField(default=datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.utcnow)
+    started_at = DateTimeField()
+    ended_at = DateTimeField()
+    cancelled_at = DateTimeField()
+    
+    # Original meeting reference for rescheduled meetings
+    original_meeting_id = StringField()
+    
+    meta = {
+        'collection': 'meetings',
+        'indexes': [
+            'guild_id',
+            'organizer_id',
+            'scheduled_time',
+            'status',
+            'created_at',
+            ('guild_id', 'status'),
+            ('scheduled_time', 'status'),
+            'announcement_message_id',
+            'voice_channel_id'
+        ]
+    }
+    
+    def save(self, *args, **kwargs):
+        self.updated_at = datetime.utcnow()
+        super().save(*args, **kwargs)
+    
+    def add_attendee(self, user_id: int, username: str = None, status: str = 'pending'):
+        """Add an attendee to the meeting."""
+        # Check if attendee already exists
+        for attendee in self.attendees:
+            if attendee.user_id == user_id:
+                attendee.status = status
+                attendee.responded_at = datetime.utcnow()
+                if username:
+                    attendee.username = username
+                return
+        
+        # Add new attendee
+        new_attendee = MeetingAttendee(
+            user_id=user_id,
+            username=username,
+            status=status,
+            responded_at=datetime.utcnow()
+        )
+        self.attendees.append(new_attendee)
+    
+    def get_attendee(self, user_id: int):
+        """Get attendee by user ID."""
+        for attendee in self.attendees:
+            if attendee.user_id == user_id:
+                return attendee
+        return None
+    
+    def get_attending_count(self):
+        """Get count of users marked as attending."""
+        return sum(1 for attendee in self.attendees if attendee.status == 'attending')
+    
+    def is_full(self):
+        """Check if meeting is full."""
+        if not self.max_attendees:
+            return False
+        return self.get_attending_count() >= self.max_attendees
+    
+    def __str__(self):
+        return f"Meeting(title={self.title}, organizer={self.organizer_id}, time={self.scheduled_time}, status={self.status})"
+
+
+class MeetingReminder(Document):
+    """
+    Model for tracking meeting reminders.
+    """
+    meeting_id = StringField(required=True)
+    reminder_type = StringField(required=True, max_length=20, 
+                               choices=['24h', '5min', 'custom'])
+    scheduled_time = DateTimeField(required=True)
+    sent_at = DateTimeField()
+    is_sent = BooleanField(default=False)
+    error_message = StringField()
+    retry_count = IntField(default=0)
+    
+    meta = {
+        'collection': 'meeting_reminders',
+        'indexes': [
+            'meeting_id',
+            'scheduled_time',
+            'is_sent',
+            ('scheduled_time', 'is_sent')
+        ]
+    }
+    
+    def __str__(self):
+        return f"MeetingReminder(meeting={self.meeting_id}, type={self.reminder_type}, sent={self.is_sent})"
+
+
+class MeetingParseLog(Document):
+    """
+    Model for tracking meeting parsing attempts and AI performance.
+    """
+    user_id = IntField(required=True)
+    guild_id = IntField(required=True)
+    original_text = StringField(required=True)
+    parsed_time = DateTimeField()
+    parsed_title = StringField()
+    mentioned_users = ListField(IntField())
+    ai_model_used = StringField(max_length=100)
+    processing_time = FloatField()
+    success = BooleanField(default=True)
+    error_message = StringField()
+    confidence_score = FloatField()
+    created_at = DateTimeField(default=datetime.utcnow)
+    
+    meta = {
+        'collection': 'meeting_parse_logs',
+        'indexes': [
+            ('user_id', 'guild_id'),
+            'success',
+            'ai_model_used',
+            'created_at',
+            'confidence_score'
+        ]
+    }
+    
+    def __str__(self):
+        return f"MeetingParseLog(user={self.user_id}, success={self.success}, model={self.ai_model_used})" 
