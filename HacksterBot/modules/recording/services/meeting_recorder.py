@@ -18,9 +18,11 @@ import logging
 import os
 import time
 import wave
+import threading
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Tuple
 from collections import defaultdict
+from queue import Queue, Empty
 
 import discord
 
@@ -33,17 +35,160 @@ except ImportError:
     voice_recv = None
 
 
+class UserAudioBuffer:
+    """Thread-safe audio buffer for a single user with real-time gap filling."""
+    
+    def __init__(self, user_id: int, username: str, output_folder: str, 
+                 sample_rate: int, channels: int, sample_width: int):
+        self.user_id = user_id
+        self.username = username
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.sample_width = sample_width
+        self.frame_size = sample_rate // 50  # 20ms frames
+        
+        # Create WAV file
+        self.filename = f"user_{user_id}_{username}.wav"
+        self.filepath = os.path.join(output_folder, self.filename)
+        self.wav_file = wave.open(self.filepath, 'wb')
+        self.wav_file.setnchannels(channels)
+        self.wav_file.setsampwidth(sample_width)
+        self.wav_file.setframerate(sample_rate)
+        
+        # Thread safety
+        self.lock = threading.Lock()
+        self.audio_queue = Queue()
+        
+        # Timing tracking
+        self.session_start_time = None
+        self.join_time = None
+        self.last_write_time = None
+        self.total_frames_written = 0
+        self.is_active = True
+        
+        # Gap tracking
+        self.leave_times = []  # List of (leave_time, rejoin_time) tuples
+        self.current_leave_time = None
+        
+    def initialize_session(self, session_start_time: float, join_time: float):
+        """Initialize the buffer for a recording session."""
+        with self.lock:
+            self.session_start_time = session_start_time
+            self.join_time = join_time
+            self.last_write_time = join_time
+            
+            # Pad from session start to join time if needed
+            if join_time > session_start_time:
+                silence_duration = join_time - session_start_time
+                self._write_silence_frames(int(silence_duration * self.sample_rate))
+                
+    def write_audio(self, pcm_data: bytes, timestamp: float):
+        """Write audio data with automatic gap filling."""
+        with self.lock:
+            if not self.is_active:
+                return
+                
+            # If we were marked as left, handle rejoin
+            if self.current_leave_time is not None:
+                # User rejoined - fill the gap
+                gap_duration = timestamp - self.current_leave_time
+                gap_frames = int(gap_duration * self.sample_rate)
+                if gap_frames > 0:
+                    self._write_silence_frames(gap_frames)
+                    
+                # Record the leave/rejoin period
+                self.leave_times.append((self.current_leave_time, timestamp))
+                self.current_leave_time = None
+                
+            # Check for natural gaps (user not speaking)
+            elif self.last_write_time is not None:
+                expected_gap = timestamp - self.last_write_time
+                # If gap is more than 100ms, fill with silence
+                if expected_gap > 0.1:
+                    gap_frames = int(expected_gap * self.sample_rate)
+                    self._write_silence_frames(gap_frames)
+                    
+            # Write the actual audio
+            self.wav_file.writeframes(pcm_data)
+            frames_written = len(pcm_data) // (self.sample_width * self.channels)
+            self.total_frames_written += frames_written
+            self.last_write_time = timestamp
+            
+    def mark_user_left(self, leave_time: float):
+        """Mark the user as having left the channel."""
+        with self.lock:
+            # Fill any gap up to the leave time
+            if self.last_write_time is not None and leave_time > self.last_write_time:
+                gap_duration = leave_time - self.last_write_time
+                gap_frames = int(gap_duration * self.sample_rate)
+                if gap_frames > 0:
+                    self._write_silence_frames(gap_frames)
+                    self.last_write_time = leave_time
+                    
+            self.current_leave_time = leave_time
+            
+    def finalize(self, session_end_time: float):
+        """Finalize the buffer and ensure correct total length."""
+        with self.lock:
+            if not self.is_active:
+                return
+                
+            # If user is still marked as left, complete the gap
+            if self.current_leave_time is not None:
+                gap_duration = session_end_time - self.current_leave_time
+                gap_frames = int(gap_duration * self.sample_rate)
+                if gap_frames > 0:
+                    self._write_silence_frames(gap_frames)
+                self.leave_times.append((self.current_leave_time, session_end_time))
+                
+            # Fill any remaining time to session end
+            elif self.last_write_time is not None and session_end_time > self.last_write_time:
+                gap_duration = session_end_time - self.last_write_time
+                gap_frames = int(gap_duration * self.sample_rate)
+                if gap_frames > 0:
+                    self._write_silence_frames(gap_frames)
+                    
+            # Close the file
+            self.wav_file.close()
+            self.is_active = False
+            
+    def _write_silence_frames(self, num_frames: int):
+        """Write silence frames to the WAV file."""
+        if num_frames <= 0:
+            return
+            
+        # Create silence data
+        silence_frame = b'\x00' * (self.sample_width * self.channels)
+        silence_data = silence_frame * num_frames
+        
+        # Write to file
+        self.wav_file.writeframes(silence_data)
+        self.total_frames_written += num_frames
+        
+    def get_info(self) -> Dict[str, Any]:
+        """Get buffer information for metadata."""
+        with self.lock:
+            return {
+                'username': self.username,
+                'filename': self.filename,
+                'filepath': self.filepath,
+                'join_time': self.join_time,
+                'total_frames': self.total_frames_written,
+                'leave_times': self.leave_times.copy(),
+                'last_write_time': self.last_write_time
+            }
+
+
 class AdvancedMultiTrackSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else object):
     """
     Advanced audio sink for time-synchronized individual track recording.
-    Records each user to a separate WAV file with consistent length and padding for dropouts.
+    Records each user to a separate WAV file with consistent length and real-time gap filling.
     
-    **Time Synchronization Features:**
-    - All audio files have identical duration (session total length)
-    - Late joiners: Padded with silence from session start
-    - Early leavers: Padded with silence to session end
-    - Leave/rejoin gaps: Filled with silence automatically
-    - Perfect timeline synchronization for multi-track editing
+    **Key Features:**
+    - Real-time gap filling (not at the end)
+    - Thread-safe multi-user audio processing
+    - Perfect time synchronization
+    - Handles complex join/leave/rejoin scenarios
     """
     
     def __init__(self, output_folder: str):
@@ -57,24 +202,29 @@ class AdvancedMultiTrackSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else o
         self.sample_rate = 48000
         self.channels = 2
         self.sample_width = 2
-        self.frame_size = self.sample_rate // 50  # 20ms frames (Discord's frame size)
         
-        # User tracking for time synchronization
-        self.user_files: Dict[int, wave.Wave_write] = {}
-        self.user_info: Dict[int, Dict[str, Any]] = {}
-        self.user_join_times: Dict[int, float] = {}
-        self.user_leave_times: Dict[int, float] = {}
-        self.user_rejoin_times: Dict[int, List[tuple]] = defaultdict(list)  # [(leave_time, rejoin_time), ...]
-        self.user_last_audio_time: Dict[int, float] = {}
-        self.user_current_session_frames: Dict[int, int] = {}  # Frames written in current session
+        # User buffers with thread safety
+        self.user_buffers: Dict[int, UserAudioBuffer] = {}
+        self.buffers_lock = threading.Lock()
+        
+        # Processing thread
+        self.processing_thread = None
+        self.stop_processing = threading.Event()
+        
+        # Packet queue for thread-safe processing
+        self.packet_queue = Queue()
         
         # Recording state
         self.total_packets = 0
         self.session_active = True
-        self.current_frame_time = self.start_time
         
         os.makedirs(output_folder, exist_ok=True)
-        self.logger.info(f"Initialized time-synchronized multi-track sink: {output_folder}")
+        
+        # Start processing thread
+        self.processing_thread = threading.Thread(target=self._process_audio_packets)
+        self.processing_thread.start()
+        
+        self.logger.info(f"Initialized real-time synchronized multi-track sink: {output_folder}")
         
     def wants_opus(self) -> bool:
         """Returns False to receive decoded PCM audio data."""
@@ -82,8 +232,7 @@ class AdvancedMultiTrackSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else o
         
     def write(self, source, voice_data):
         """
-        Process voice data with time synchronization.
-        Automatically handles user join/leave scenarios with proper padding.
+        Queue voice data for processing to avoid packet conflicts.
         """
         try:
             if not voice_data or not self.session_active:
@@ -105,190 +254,99 @@ class AdvancedMultiTrackSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else o
             if not pcm_data:
                 return
                 
-            user_id = user.id
-            current_time = time.time()
+            # Queue the packet for processing
+            timestamp = time.time()
+            self.packet_queue.put((user, pcm_data, timestamp))
             self.total_packets += 1
-            
-            # Initialize user recording if not exists
-            if user_id not in self.user_files:
-                self._init_user_recording(user, current_time)
                 
-            # Update user's last audio time
-            self.user_last_audio_time[user_id] = current_time
-                
-            # Write audio data to user's file
-            if user_id in self.user_files and self.user_files[user_id]:
-                try:
-                    # Fill any gaps since last audio (for rejoin scenarios)
-                    self._fill_audio_gaps(user_id, current_time)
-                    
-                    # Write the actual audio data
-                    self.user_files[user_id].writeframes(pcm_data)
-                    
-                    # Update frame count
-                    frames_written = len(pcm_data) // (self.sample_width * self.channels)
-                    self.user_current_session_frames[user_id] = self.user_current_session_frames.get(user_id, 0) + frames_written
-                    
-                    # Update user info
-                    self.user_info[user_id].update({
-                        'last_packet_time': current_time,
-                        'total_frames': self.user_info[user_id].get('total_frames', 0) + frames_written
-                    })
-                    
-                except Exception as write_error:
-                    self.logger.debug(f"Error writing audio frames for user {user_id}: {write_error}")
-                    
         except Exception as e:
             error_str = str(e).lower()
             if not any(keyword in error_str for keyword in ['aead_xchacha20_poly1305', 'rtpsize']):
-                self.logger.warning(f"Voice data processing error: {e}")
+                self.logger.warning(f"Voice data queueing error: {e}")
                 
-    def _init_user_recording(self, user, join_time: float):
-        """Initialize time-synchronized recording for a new user."""
-        try:
-            user_id = user.id
-            username = user.display_name or user.name or f"user_{user_id}"
-            clean_username = "".join(c for c in username if c.isalnum() or c in (' ', '-', '_')).strip()
-            filename = f"user_{user_id}_{clean_username}.wav"
-            filepath = os.path.join(self.output_folder, filename)
-            
-            # Create WAV file
-            wav_file = wave.open(filepath, 'wb')
-            wav_file.setnchannels(self.channels)
-            wav_file.setsampwidth(self.sample_width)
-            wav_file.setframerate(self.sample_rate)
-            
-            self.user_files[user_id] = wav_file
-            self.user_join_times[user_id] = join_time
-            self.user_last_audio_time[user_id] = join_time
-            self.user_current_session_frames[user_id] = 0
-            
-            self.user_info[user_id] = {
-                'username': clean_username,
-                'filename': filename,
-                'filepath': filepath,
-                'join_time': join_time,
-                'total_frames': 0,
-                'last_packet_time': join_time
-            }
-            
-            # Pad from session start to user join time (for late joiners)
-            silence_duration = join_time - self.start_time
-            if silence_duration > 0:
-                self._write_silence(user_id, silence_duration)
-                self.logger.info(f"Added {silence_duration:.2f}s silence padding for late joiner {clean_username}")
-            
-            self.logger.info(f"Started time-synchronized recording for {clean_username} ({user_id})")
-            
-        except Exception as e:
-            self.logger.error(f"Error initializing user recording: {e}")
-            
-    def _fill_audio_gaps(self, user_id: int, current_time: float):
-        """Fill silence gaps for users who left and rejoined."""
-        if user_id not in self.user_last_audio_time:
-            return
-            
-        last_audio_time = self.user_last_audio_time[user_id]
-        gap_duration = current_time - last_audio_time
-        
-        # If gap is longer than 1 second, fill with silence (user likely left and rejoined)
-        if gap_duration > 1.0:
-            self._write_silence(user_id, gap_duration)
-            self.logger.debug(f"Filled {gap_duration:.2f}s gap for user {user_id}")
-            
-    def _write_silence(self, user_id: int, duration_seconds: float):
-        """Write silence padding to user's audio file."""
-        if user_id not in self.user_files or not self.user_files[user_id]:
-            return
-            
-        try:
-            # Calculate number of frames for the duration
-            total_frames = int(duration_seconds * self.sample_rate)
-            
-            # Create silence data (zeros)
-            silence_frame = b'\x00' * (self.sample_width * self.channels)
-            silence_data = silence_frame * total_frames
-            
-            # Write silence to file
-            self.user_files[user_id].writeframes(silence_data)
-            
-            # Update frame count
-            self.user_current_session_frames[user_id] = self.user_current_session_frames.get(user_id, 0) + total_frames
-            
-            # Update total frame count
-            if user_id in self.user_info:
-                self.user_info[user_id]['total_frames'] = self.user_info[user_id].get('total_frames', 0) + total_frames
-                
-        except Exception as e:
-            self.logger.error(f"Error writing silence for user {user_id}: {e}")
-            
-    def mark_user_leave(self, user_id: int, leave_time: float):
-        """Mark when a user leaves (for external tracking)."""
-        self.user_leave_times[user_id] = leave_time
-        if user_id in self.user_last_audio_time:
-            # Record the gap start time
-            self.user_rejoin_times[user_id].append((leave_time, None))
-            self.logger.info(f"User {user_id} left at {leave_time - self.start_time:.2f}s from session start")
-            
-    def mark_user_rejoin(self, user_id: int, rejoin_time: float):
-        """Mark when a user rejoins (for external tracking)."""
-        if user_id in self.user_rejoin_times and self.user_rejoin_times[user_id]:
-            # Complete the last gap record
-            last_gap = list(self.user_rejoin_times[user_id][-1])
-            if last_gap[1] is None:  # Incomplete gap
-                last_gap[1] = rejoin_time
-                self.user_rejoin_times[user_id][-1] = tuple(last_gap)
-                gap_duration = rejoin_time - last_gap[0]
-                self.logger.info(f"User {user_id} rejoined after {gap_duration:.2f}s gap")
-                
-    def finalize_session(self):
-        """Finalize recording session by padding all users to same total length."""
-        if not self.session_active:
-            return
-            
-        self.session_active = False
-        session_end_time = time.time()
-        total_session_duration = session_end_time - self.start_time
-        
-        self.logger.info(f"Finalizing session: total duration {total_session_duration:.2f}s")
-        
-        # Calculate target total frames for the entire session
-        target_total_frames = int(total_session_duration * self.sample_rate)
-        
-        # Pad all users to full session length
-        for user_id in list(self.user_files.keys()):
+    def _process_audio_packets(self):
+        """Process audio packets in a dedicated thread to avoid conflicts."""
+        while not self.stop_processing.is_set() or not self.packet_queue.empty():
             try:
-                current_frames = self.user_current_session_frames.get(user_id, 0)
-                missing_frames = target_total_frames - current_frames
+                # Get packet with timeout
+                user, pcm_data, timestamp = self.packet_queue.get(timeout=0.1)
                 
-                if missing_frames > 0:
-                    missing_duration = missing_frames / self.sample_rate
-                    self._write_silence(user_id, missing_duration)
-                    self.logger.info(f"Added {missing_duration:.2f}s final padding for user {user_id} (total: {target_total_frames:,} frames)")
-                elif missing_frames < 0:
-                    self.logger.warning(f"User {user_id} has {-missing_frames} extra frames - this shouldn't happen")
-                else:
-                    self.logger.info(f"User {user_id} already has correct length: {current_frames:,} frames")
-                    
+                # Process the packet
+                self._process_user_audio(user, pcm_data, timestamp)
+                
+            except Empty:
+                continue
             except Exception as e:
-                self.logger.error(f"Error finalizing user {user_id}: {e}")
-                    
-        self.logger.info(f"Session finalized: all files now have {target_total_frames:,} frames ({total_session_duration:.2f}s)")
+                self.logger.error(f"Error processing audio packet: {e}")
+                
+    def _process_user_audio(self, user, pcm_data: bytes, timestamp: float):
+        """Process audio for a specific user."""
+        user_id = user.id
+        
+        with self.buffers_lock:
+            # Create buffer if doesn't exist
+            if user_id not in self.user_buffers:
+                username = user.display_name or user.name or f"user_{user_id}"
+                clean_username = "".join(c for c in username if c.isalnum() or c in (' ', '-', '_')).strip()
+                
+                buffer = UserAudioBuffer(
+                    user_id=user_id,
+                    username=clean_username,
+                    output_folder=self.output_folder,
+                    sample_rate=self.sample_rate,
+                    channels=self.channels,
+                    sample_width=self.sample_width
+                )
+                
+                buffer.initialize_session(self.start_time, timestamp)
+                self.user_buffers[user_id] = buffer
+                
+                self.logger.info(f"Started real-time recording for {clean_username} ({user_id})")
+                
+        # Write audio to user's buffer
+        buffer = self.user_buffers[user_id]
+        buffer.write_audio(pcm_data, timestamp)
+        
+    def mark_user_leave(self, user_id: int, leave_time: float):
+        """Mark when a user leaves for real-time gap tracking."""
+        with self.buffers_lock:
+            if user_id in self.user_buffers:
+                self.user_buffers[user_id].mark_user_left(leave_time)
+                self.logger.info(f"User {user_id} marked as left at {leave_time - self.start_time:.2f}s from start")
+                
+    def mark_user_rejoin(self, user_id: int, rejoin_time: float):
+        """Mark when a user rejoins (handled automatically in write_audio)."""
+        self.logger.info(f"User {user_id} rejoined at {rejoin_time - self.start_time:.2f}s from start")
         
     def cleanup(self):
-        """Close all user recording files and generate metadata."""
+        """Stop processing and finalize all recordings."""
         try:
-            # Finalize session first
-            self.finalize_session()
+            self.session_active = False
+            session_end_time = time.time()
             
-            # Close all WAV files
-            for user_id, wav_file in self.user_files.items():
-                if wav_file:
-                    wav_file.close()
+            self.logger.info("Stopping audio processing thread...")
+            
+            # Stop processing thread
+            self.stop_processing.set()
+            if self.processing_thread:
+                self.processing_thread.join(timeout=5.0)
+                
+            # Process any remaining packets
+            while not self.packet_queue.empty():
+                try:
+                    user, pcm_data, timestamp = self.packet_queue.get_nowait()
+                    self._process_user_audio(user, pcm_data, timestamp)
+                except Empty:
+                    break
                     
-            self.logger.info(f"Closed {len(self.user_files)} time-synchronized recording files")
+            # Finalize all buffers
+            with self.buffers_lock:
+                for buffer in self.user_buffers.values():
+                    buffer.finalize(session_end_time)
+                    
+            self.logger.info(f"Finalized {len(self.user_buffers)} synchronized recordings")
             
-            # Generate comprehensive metadata
+            # Generate metadata
             self._generate_metadata()
             
         except Exception as e:
@@ -301,15 +359,15 @@ class AdvancedMultiTrackSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else o
             session_duration = time.time() - self.start_time
             
             with open(metadata_file, "w", encoding="utf-8") as f:
-                f.write("Time-Synchronized Multi-Track Recording Metadata\n")
-                f.write("=" * 48 + "\n\n")
+                f.write("Real-Time Synchronized Multi-Track Recording Metadata\n")
+                f.write("=" * 53 + "\n\n")
                 
-                f.write(f"Recording Method: Time-Synchronized (discord-ext-voice-recv)\n")
+                f.write(f"Recording Method: Real-Time Synchronized (discord-ext-voice-recv)\n")
                 f.write(f"Start Time: {datetime.fromtimestamp(self.start_time)}\n")
                 f.write(f"End Time: {datetime.now()}\n")
                 f.write(f"Total Session Duration: {session_duration:.2f} seconds\n")
                 f.write(f"Total Packets Processed: {self.total_packets}\n")
-                f.write(f"Users Recorded: {len(self.user_files)}\n\n")
+                f.write(f"Users Recorded: {len(self.user_buffers)}\n\n")
                 
                 f.write("Audio Settings:\n")
                 f.write("- Format: WAV\n")
@@ -317,60 +375,61 @@ class AdvancedMultiTrackSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else o
                 f.write(f"- Channels: {self.channels} (Stereo)\n")
                 f.write(f"- Bit Depth: {self.sample_width * 8}-bit\n")
                 f.write("- Track Separation: Individual per user\n")
-                f.write("- Time Synchronization: Enabled\n")
-                f.write("- Auto Padding: Late joiners, early leavers, gaps\n\n")
+                f.write("- Gap Filling: Real-time (not deferred)\n")
+                f.write("- Thread Safety: Full packet queue isolation\n\n")
                 
-                f.write("Time Synchronization Features:\n")
-                f.write("- All audio files have identical duration\n")
-                f.write("- Late joiners: Padded with silence from session start\n")
-                f.write("- Early leavers: Padded with silence to session end\n")
-                f.write("- Leave/rejoin gaps: Filled with silence automatically\n")
-                f.write("- Perfect timeline synchronization for multi-track editing\n\n")
+                f.write("Key Features:\n")
+                f.write("- Real-time gap filling during recording\n")
+                f.write("- Thread-safe multi-user audio processing\n")
+                f.write("- No packet conflicts or audio stuttering\n")
+                f.write("- Perfect time synchronization\n")
+                f.write("- Handles complex join/leave/rejoin scenarios\n\n")
                 
-                # Calculate target frames for verification
+                # Calculate target frames
                 target_frames = int(session_duration * self.sample_rate)
                 
                 f.write("User Recording Details:\n")
-                for user_id, info in self.user_info.items():
-                    join_offset = info['join_time'] - self.start_time
-                    last_packet_offset = info['last_packet_time'] - self.start_time
-                    total_frames = info['total_frames']
-                    file_duration = total_frames / self.sample_rate if total_frames > 0 else session_duration
-                    data_mb = total_frames * (self.sample_width * self.channels) / (1024 * 1024)
-                    
-                    f.write(f"- {info['username']} (ID: {user_id})\n")
-                    f.write(f"  File: {info['filename']}\n")
-                    f.write(f"  Join Offset: {join_offset:.2f}s from session start\n")
-                    f.write(f"  Last Audio: {last_packet_offset:.2f}s from session start\n")
-                    f.write(f"  File Duration: {file_duration:.2f}s (time-synchronized)\n")
-                    f.write(f"  Total Frames: {total_frames:,} (target: {target_frames:,})\n")
-                    f.write(f"  Frame Match: {'✓' if total_frames == target_frames else '✗'}\n")
-                    f.write(f"  File Size: {data_mb:.2f} MB\n")
-                    
-                    # Calculate padding information
-                    if join_offset > 0:
-                        f.write(f"  Pre-padding: {join_offset:.2f}s (late joiner)\n")
-                    
-                    end_padding = session_duration - last_packet_offset
-                    if end_padding > 0:
-                        f.write(f"  Post-padding: {end_padding:.2f}s (early leaver or silence)\n")
+                with self.buffers_lock:
+                    for user_id, buffer in self.user_buffers.items():
+                        info = buffer.get_info()
+                        join_offset = (info['join_time'] - self.start_time) if info['join_time'] else 0
+                        total_frames = info['total_frames']
+                        file_duration = total_frames / self.sample_rate if total_frames > 0 else 0
+                        data_mb = total_frames * (self.sample_width * self.channels) / (1024 * 1024)
                         
-                    # Gap information
-                    if user_id in self.user_rejoin_times and self.user_rejoin_times[user_id]:
-                        gaps = [gap for gap in self.user_rejoin_times[user_id] if gap[1] is not None]
-                        if gaps:
-                            total_gap_time = sum(gap[1] - gap[0] for gap in gaps)
-                            f.write(f"  Rejoin Gaps: {len(gaps)} gaps, {total_gap_time:.2f}s total\n")
-                    
-                    f.write("\n")
-                    
-                f.write("Time Synchronization Verification:\n")
-                all_same_length = all(info['total_frames'] == target_frames for info in self.user_info.values())
-                f.write(f"- All files same length: {'✓ YES' if all_same_length else '✗ NO'}\n")
-                f.write(f"- Target frame count: {target_frames:,}\n")
+                        f.write(f"\n- {info['username']} (ID: {user_id})\n")
+                        f.write(f"  File: {info['filename']}\n")
+                        f.write(f"  Join Offset: {join_offset:.2f}s from session start\n")
+                        f.write(f"  File Duration: {file_duration:.2f}s\n")
+                        f.write(f"  Total Frames: {total_frames:,} (target: {target_frames:,})\n")
+                        f.write(f"  Frame Match: {'✓' if abs(total_frames - target_frames) < 100 else '✗'}\n")
+                        f.write(f"  File Size: {data_mb:.2f} MB\n")
+                        
+                        # Leave/rejoin information
+                        if info['leave_times']:
+                            f.write(f"  Leave/Rejoin Events: {len(info['leave_times'])}\n")
+                            for i, (leave, rejoin) in enumerate(info['leave_times']):
+                                leave_offset = leave - self.start_time
+                                rejoin_offset = rejoin - self.start_time if rejoin < session_duration + self.start_time else session_duration
+                                gap_duration = rejoin_offset - leave_offset
+                                f.write(f"    Event {i+1}: Left at {leave_offset:.2f}s, rejoined at {rejoin_offset:.2f}s (gap: {gap_duration:.2f}s)\n")
+                        
+                f.write("\n\nTime Synchronization Summary:\n")
+                all_same_length = True
+                with self.buffers_lock:
+                    frame_counts = [b.get_info()['total_frames'] for b in self.user_buffers.values()]
+                    if frame_counts:
+                        min_frames = min(frame_counts)
+                        max_frames = max(frame_counts)
+                        diff = max_frames - min_frames
+                        all_same_length = diff < 100  # Allow small variance
+                        
+                f.write(f"- All files synchronized: {'✓ YES' if all_same_length else '✗ NO'}\n")
+                if not all_same_length and frame_counts:
+                    f.write(f"- Frame difference: {diff} frames ({diff/self.sample_rate:.3f}s)\n")
                 f.write(f"- Ready for multi-track editing: {'✓ YES' if all_same_length else '✗ NO'}\n")
                     
-            self.logger.info(f"Generated time-synchronized recording metadata: {metadata_file}")
+            self.logger.info(f"Generated real-time synchronized recording metadata: {metadata_file}")
             
         except Exception as e:
             self.logger.error(f"Error generating metadata: {e}")

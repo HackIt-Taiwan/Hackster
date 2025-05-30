@@ -373,6 +373,7 @@
 
 - **2025-05-30**
   - *任務*：修復 HacksterBot 錄音系統，實現真正的音軌分離錄音功能
+  - *問題*：1) 用戶反映 basic 錄音模式沒有聲音且功能不足 2) discord-ext-voice-recv 整合錯誤 "sink must be an AudioSink not AdvancedMultiTrackSink" 3) 中文字符編碼問題導致會議室名稱錯誤 4) 新版本 discord-ext-voice-recv API 變更導致 "write() takes 2 positional arguments but 3 were given" 錯誤 5) 會議記錄模板中的 \\n 沒有正確顯示為換行符 6) **重大問題**：補白全部塞在檔案最後而非正確位置，多人同時說話時封包衝突導致錄音卡頓
   - *問題*：1) 用戶反映 basic 錄音模式沒有聲音且功能不足 2) discord-ext-voice-recv 整合錯誤 "sink must be an AudioSink not AdvancedMultiTrackSink" 3) 中文字符編碼問題導致會議室名稱錯誤 4) 新版本 discord-ext-voice-recv API 變更導致 "write() takes 2 positional arguments but 3 were given" 錯誤 5) 會議記錄模板中的 \\n 沒有正確顯示為換行符
   - *解決*：1) 完全重寫 meeting_recorder.py，正確實現 voice_recv.AudioSink 繼承 2) 修復中文字符問題，改用英文會議室名稱格式 "Meeting-%m%d-%H%M" 3) 實現真正的音軌分離功能，每個用戶獨立的 WAV 檔案 4) 添加高品質 48kHz 16-bit 立體聲錄音 5) 實現即時音頻包處理和完整的元數據生成 6) 移除所有 basic 模式代碼，專注於高級錄音功能 7) 升級到 discord-ext-voice-recv 最新版本 (0.5.0a165) 8) 修正 AudioSink.write() 方法簽名適配新 API (write(self, source, voice_data)) 9) 創建 _process_template 方法統一處理所有模板的換行符轉換，將字面上的 \\n 轉換為實際換行符
   - *結論*：discord-ext-voice-recv 需要正確的 AudioSink 類繼承和 write 方法實現；音軌分離比混合錄音提供更好的後處理靈活性；中文字符在檔案路徑中容易導致編碼問題；真實的音頻錄音比模擬更有實用價值；用戶體驗要求完整功能而非妥協方案；API 升級時要注意方法簽名變更；模板字串中的換行符需要統一處理，從配置文件讀取的 \\n 需要轉換為實際換行符
