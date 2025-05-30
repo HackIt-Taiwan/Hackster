@@ -46,7 +46,7 @@ class MeetingManager:
                 guild_id=guild_id,
                 status__in=['scheduled', 'started'],
                 attendees__user_id=user_id,
-                attendees__status__in=['attending', 'maybe']
+                attendees__status__in=['attending', 'pending']
             ).order_by('scheduled_time')
             
             embed = discord.Embed(
@@ -84,7 +84,7 @@ class MeetingManager:
                             user_status = attendee.status
                             break
                     
-                    status_emoji = {"attending": "✅", "maybe": "❓", "pending": "⏳"}.get(user_status, "⏳")
+                    status_emoji = {"attending": "✅", "pending": "⏳"}.get(user_status, "⏳")
                     attending_text += f"{status_emoji} **{meeting.title}**\n"
                     attending_text += f"   📅 {time_str} | 👤 <@{meeting.organizer_id}>\n"
                     attending_text += f"   🆔 `{str(meeting.id)}`\n\n"
@@ -360,7 +360,7 @@ class MeetingManager:
         )
         
         # Meeting details
-        time_str = meeting.scheduled_time.strftime("%Y年%m月%d日 %H:%M")
+        time_str = meeting.scheduled_time.strftime("%Y/%m/%d %H:%M")
         duration_str = f"{meeting.duration_minutes}分鐘"
         
         embed.add_field(
@@ -428,13 +428,12 @@ class MeetingManager:
         return embed
     
     def _format_attendees(self, meeting: Meeting, guild: discord.Guild) -> str:
-        """Format attendees list for display."""
+        """Format attendees list for display in Apple style."""
         if not meeting.attendees:
-            return "無參與者"
+            return "尚無參與者"
         
         attendee_groups = {
             'attending': [],
-            'maybe': [],
             'not_attending': [],
             'pending': []
         }
@@ -447,24 +446,30 @@ class MeetingManager:
         result = []
         
         if attendee_groups['attending']:
-            result.append(f"✅ **參加** ({len(attendee_groups['attending'])}人)")
-            result.append(", ".join(attendee_groups['attending'][:10]))  # Limit display
-            if len(attendee_groups['attending']) > 10:
-                result.append(f"... 及其他 {len(attendee_groups['attending']) - 10} 人")
-        
-        if attendee_groups['maybe']:
-            result.append(f"\n❓ **可能參加** ({len(attendee_groups['maybe'])}人)")
-            result.append(", ".join(attendee_groups['maybe'][:5]))
-        
-        if attendee_groups['not_attending']:
-            result.append(f"\n❌ **無法參加** ({len(attendee_groups['not_attending'])}人)")
-            result.append(", ".join(attendee_groups['not_attending'][:5]))
+            result.append(f"**參加者** ({len(attendee_groups['attending'])})")
+            # Show first 8 names for clean display
+            shown = attendee_groups['attending'][:8]
+            result.append("・".join(shown))
+            if len(attendee_groups['attending']) > 8:
+                result.append(f"等 {len(attendee_groups['attending'])} 人")
         
         if attendee_groups['pending']:
-            result.append(f"\n⏳ **待回覆** ({len(attendee_groups['pending'])}人)")
-            result.append(", ".join(attendee_groups['pending'][:5]))
+            if result:
+                result.append("")  # Add spacing
+            result.append(f"**待回覆** ({len(attendee_groups['pending'])})")
+            # Only show pending if not too many
+            if len(attendee_groups['pending']) <= 5:
+                result.append("・".join(attendee_groups['pending']))
+            else:
+                result.append(f"{len(attendee_groups['pending'])} 人")
         
-        return "\n".join(result) if result else "無參與者"
+        if attendee_groups['not_attending'] and len(attendee_groups['not_attending']) <= 3:
+            if result:
+                result.append("")  # Add spacing
+            result.append(f"**無法參加** ({len(attendee_groups['not_attending'])})")
+            result.append("・".join(attendee_groups['not_attending']))
+        
+        return "\n".join(result) if result else "尚無參與者"
     
     def _get_status_color(self, status: str) -> discord.Color:
         """Get color for meeting status."""

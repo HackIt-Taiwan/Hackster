@@ -35,36 +35,32 @@ class MeetingsModule(ModuleBase):
         self.time_parser = None
         
     async def setup(self):
-        """Initialize the meetings module."""
+        """Setup the meetings module."""
         try:
-            if not self.config.meetings.enabled:
-                self.logger.info("Meetings module disabled in configuration")
-                return
+            self.logger.info("Setting up meetings module...")
             
-            # Initialize time parser agent
-            self.time_parser = TimeParserAgent(self.bot, self.config)
-            await self.time_parser.initialize()
+            # MongoDB is already initialized by the core system
+            # No need to initialize it again here
             
-            # Initialize meeting scheduler
-            self.scheduler = MeetingScheduler(self.bot, self.config, self.time_parser)
-            
-            # Initialize reminder service
+            # Initialize services
+            self.meeting_scheduler = MeetingScheduler(self.bot, self.config)
+            self.meeting_manager = MeetingManager(self.bot, self.config)
             self.reminder_service = ReminderService(self.bot, self.config)
+            
+            # Add aliases for backward compatibility
+            self.scheduler = self.meeting_scheduler
+            self.manager = self.meeting_manager
+            
+            # Start reminder task
             await self.reminder_service.start()
             
-            # Initialize meeting manager
-            self.manager = MeetingManager(self.bot, self.config)
-            
-            # Register event listeners
-            self.bot.add_listener(self._on_voice_state_update, 'on_voice_state_update')
-            
-            # Register slash commands
+            # Register commands
             await self._register_commands()
             
-            self.logger.info("Meetings module loaded successfully")
+            self.logger.info("Meetings module setup completed")
             
         except Exception as e:
-            self.logger.error(f"Failed to setup meetings module: {e}")
+            self.logger.error(f"Error setting up meetings module: {e}")
             raise
             
     async def teardown(self):
@@ -95,37 +91,37 @@ class MeetingsModule(ModuleBase):
                 描述: Meeting description (optional)  
                 最大人數: Maximum number of attendees (optional)
             """
-            await self.scheduler.handle_meeting_request(
+            await self.meeting_scheduler.handle_meeting_request(
                 interaction, 時間, 參與者, 標題, 描述, 最大人數
             )
         
         @self.bot.tree.command(name="meetings", description="查看我的會議")
         async def my_meetings_command(interaction: discord.Interaction):
             """View your scheduled meetings."""
-            await self.manager.show_user_meetings(interaction)
+            await self.meeting_manager.show_user_meetings(interaction)
         
         @self.bot.tree.command(name="meeting_info", description="查看會議詳情")
         async def meeting_info_command(interaction: discord.Interaction, 會議id: str):
             """View detailed meeting information."""
-            await self.manager.show_meeting_info(interaction, 會議id)
+            await self.meeting_manager.show_meeting_info(interaction, 會議id)
     
     # Public API methods for other modules
     async def get_meeting_by_id(self, meeting_id: str):
         """Get meeting by ID."""
-        if self.manager:
-            return await self.manager.get_meeting_by_id(meeting_id)
+        if self.meeting_manager:
+            return await self.meeting_manager.get_meeting_by_id(meeting_id)
         return None
     
     async def cancel_meeting(self, meeting_id: str, user_id: int):
         """Cancel a meeting."""
-        if self.manager:
-            return await self.manager.cancel_meeting(meeting_id, user_id)
+        if self.meeting_manager:
+            return await self.meeting_manager.cancel_meeting(meeting_id, user_id)
         return False
     
     async def start_meeting(self, meeting_id: str):
         """Start a meeting (create voice channel and begin recording)."""
-        if self.manager:
-            return await self.manager.start_meeting(meeting_id)
+        if self.meeting_manager:
+            return await self.meeting_manager.start_meeting(meeting_id)
         return False
     
     async def end_meeting(self, meeting_id: str):

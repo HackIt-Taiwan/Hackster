@@ -363,7 +363,7 @@ class MeetingAttendee(EmbeddedDocument):
     user_id = IntField(required=True)
     username = StringField(max_length=200)
     status = StringField(max_length=20, default='pending',
-                        choices=['pending', 'attending', 'not_attending', 'maybe'])
+                        choices=['pending', 'attending', 'not_attending'])
     responded_at = DateTimeField()
     
     def __str__(self):

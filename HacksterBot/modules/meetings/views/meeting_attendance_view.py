@@ -1,5 +1,5 @@
 """
-Meeting attendance view for users to respond to meeting invitations.
+Apple-style meeting attendance view with real-time attendance updates.
 """
 
 import discord
@@ -7,67 +7,53 @@ from core.models import Meeting
 
 
 class MeetingAttendanceView(discord.ui.View):
-    """View for meeting attendance responses."""
+    """Persistent view for meeting attendance responses with Apple-style design."""
     
     def __init__(self, meeting_id: str):
         super().__init__(timeout=None)  # Persistent view
         self.meeting_id = meeting_id
+        
+        # Add control panel button - will be shown/hidden based on user
+        self.control_button = discord.ui.Button(
+            label="🎛️ 會議控制",
+            style=discord.ButtonStyle.gray,
+            custom_id=f"meeting_control_{meeting_id}"
+        )
+        self.control_button.callback = self.show_control_panel
+        self.add_item(self.control_button)
     
-    @discord.ui.button(label="✅ 我會參加", style=discord.ButtonStyle.green, emoji="✅")
-    async def attend_meeting(self, interaction: discord.Interaction, 
-                           button: discord.ui.Button):
+    @discord.ui.button(label="參加", style=discord.ButtonStyle.green)
+    async def attend_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Mark user as attending."""
+        # Set custom_id for persistence
+        if not button.custom_id:
+            button.custom_id = f"meeting_attend_{self.meeting_id}"
         await self._update_attendance(interaction, 'attending')
     
-    @discord.ui.button(label="❌ 無法參加", style=discord.ButtonStyle.red, emoji="❌")
-    async def decline_meeting(self, interaction: discord.Interaction, 
-                            button: discord.ui.Button):
+    @discord.ui.button(label="無法參加", style=discord.ButtonStyle.red)
+    async def decline_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Mark user as not attending."""
+        # Set custom_id for persistence
+        if not button.custom_id:
+            button.custom_id = f"meeting_decline_{self.meeting_id}"
         await self._update_attendance(interaction, 'not_attending')
     
-    @discord.ui.button(label="❓ 可能參加", style=discord.ButtonStyle.secondary, emoji="❓")
-    async def maybe_meeting(self, interaction: discord.Interaction, 
-                          button: discord.ui.Button):
-        """Mark user as maybe attending."""
-        await self._update_attendance(interaction, 'maybe')
-    
-    @discord.ui.button(label="📋 查看出席名單", style=discord.ButtonStyle.primary, emoji="📋")
-    async def view_attendees(self, interaction: discord.Interaction, 
-                           button: discord.ui.Button):
-        """Show attendee list."""
-        try:
-            meeting = Meeting.objects(id=self.meeting_id).first()
-            if not meeting:
-                await interaction.response.send_message(
-                    "❌ 找不到該會議。", ephemeral=True
-                )
-                return
-            
-            embed = await self._create_attendee_list_embed(meeting, interaction.guild)
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            
-        except Exception as e:
-            await interaction.response.send_message(
-                "❌ 查看出席名單時發生錯誤。", ephemeral=True
-            )
-    
     async def _update_attendance(self, interaction: discord.Interaction, status: str):
-        """Update user's attendance status."""
+        """Update user's attendance status with real-time message updates."""
         try:
             meeting = Meeting.objects(id=self.meeting_id).first()
             if not meeting:
                 await interaction.response.send_message(
-                    "❌ 找不到該會議。", ephemeral=True
+                    "會議不存在", ephemeral=True
                 )
                 return
             
             # Check if meeting is full (for attending status)
             if status == 'attending' and meeting.is_full():
-                # Check if user is already attending
                 current_attendee = meeting.get_attendee(interaction.user.id)
                 if not current_attendee or current_attendee.status != 'attending':
                     await interaction.response.send_message(
-                        "😔 抱歉，會議已滿員，無法參加。", ephemeral=True
+                        "會議已滿員", ephemeral=True
                     )
                     return
             
@@ -79,113 +65,30 @@ class MeetingAttendanceView(discord.ui.View):
             )
             meeting.save()
             
-            # Create response embed
-            status_text = {
-                'attending': '✅ 已標記為參加',
-                'not_attending': '❌ 已標記為無法參加',
-                'maybe': '❓ 已標記為可能參加'
+            # Update the original announcement message with new attendance list
+            await self._update_announcement_embed(interaction, meeting)
+            
+            # Create Apple-style response
+            status_config = {
+                'attending': {'emoji': '✓', 'text': '已確認參加', 'color': 0x34C759},
+                'not_attending': {'emoji': '✗', 'text': '已標記無法參加', 'color': 0xFF3B30}
             }
             
+            config = status_config[status]
             embed = discord.Embed(
-                title=status_text[status],
-                description=f"您已回應會議：**{meeting.title}**",
-                color=self._get_status_color(status)
+                description=f"{config['emoji']} {config['text']}",
+                color=config['color']
             )
-            
-            # Add meeting info
-            embed.add_field(
-                name="⏰ 會議時間",
-                value=meeting.scheduled_time.strftime('%Y年%m月%d日 %H:%M'),
-                inline=True
-            )
-            
-            embed.add_field(
-                name="👥 目前狀況",
-                value=f"{meeting.get_attending_count()} 人確認參加",
-                inline=True
-            )
-            
-            # Update the original message with new counts
-            try:
-                await self._update_announcement_embed(interaction, meeting)
-            except:
-                pass  # Don't fail if we can't update the announcement
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
             
         except Exception as e:
             await interaction.response.send_message(
-                "❌ 更新出席狀態時發生錯誤。", ephemeral=True
+                "更新失敗，請稍後再試", ephemeral=True
             )
     
-    async def _create_attendee_list_embed(self, meeting: Meeting, 
-                                        guild: discord.Guild) -> discord.Embed:
-        """Create embed showing attendee list."""
-        embed = discord.Embed(
-            title="📋 會議出席名單",
-            description=f"**{meeting.title}**",
-            color=discord.Color.blue()
-        )
-        
-        # Categorize attendees
-        attending = []
-        not_attending = []
-        maybe = []
-        
-        for attendee in meeting.attendees:
-            member = guild.get_member(attendee.user_id)
-            display_name = member.display_name if member else attendee.username or "未知用戶"
-            
-            if attendee.status == 'attending':
-                attending.append(f"• {display_name}")
-            elif attendee.status == 'not_attending':
-                not_attending.append(f"• {display_name}")
-            elif attendee.status == 'maybe':
-                maybe.append(f"• {display_name}")
-        
-        # Add fields for each category
-        if attending:
-            embed.add_field(
-                name=f"✅ 確認參加 ({len(attending)})",
-                value="\n".join(attending) or "無",
-                inline=True
-            )
-        
-        if maybe:
-            embed.add_field(
-                name=f"❓ 可能參加 ({len(maybe)})",
-                value="\n".join(maybe) or "無",
-                inline=True
-            )
-        
-        if not_attending:
-            embed.add_field(
-                name=f"❌ 無法參加 ({len(not_attending)})",
-                value="\n".join(not_attending) or "無",
-                inline=True
-            )
-        
-        # Add meeting info
-        embed.add_field(
-            name="⏰ 會議時間",
-            value=meeting.scheduled_time.strftime('%Y年%m月%d日 %A %H:%M'),
-            inline=False
-        )
-        
-        if meeting.max_attendees:
-            embed.add_field(
-                name="👥 人數限制",
-                value=f"{len(attending)}/{meeting.max_attendees} 人",
-                inline=True
-            )
-        
-        embed.set_footer(text=f"會議 ID: {meeting.id}")
-        
-        return embed
-    
-    async def _update_announcement_embed(self, interaction: discord.Interaction, 
-                                       meeting: Meeting):
-        """Update the original announcement message with new attendance counts."""
+    async def _update_announcement_embed(self, interaction: discord.Interaction, meeting: Meeting):
+        """Update the original announcement message with real-time attendance list."""
         if not meeting.announcement_message_id or not meeting.announcement_channel_id:
             return
         
@@ -195,38 +98,139 @@ class MeetingAttendanceView(discord.ui.View):
                 return
             
             message = await channel.fetch_message(meeting.announcement_message_id)
-            if not message:
+            if not message or not message.embeds:
                 return
             
-            # Get current embed and update attendance count
-            if message.embeds:
-                embed = message.embeds[0]
+            # Get current embed and update it
+            embed = message.embeds[0]
+            
+            # Create comprehensive attendance lists
+            attending_list = []
+            declined_list = []
+            pending_list = []
+            
+            for attendee in meeting.attendees:
+                # Use mention format instead of display name
+                mention = f"<@{attendee.user_id}>"
                 
-                # Update participant count field
-                attending_count = meeting.get_attending_count()
-                if meeting.max_attendees:
-                    count_text = f"{attending_count}/{meeting.max_attendees} 人"
-                else:
-                    count_text = f"{attending_count} 人確認參加"
+                if attendee.status == 'attending':
+                    attending_list.append(mention)
+                elif attendee.status == 'not_attending':
+                    declined_list.append(mention)
+                elif attendee.status == 'pending':
+                    pending_list.append(mention)
+            
+            # Build comprehensive attendance display
+            attendance_text = ""
+            
+            # 參加者 (綠色圓點)
+            if attending_list:
+                attendance_text += f"🟢 **參加** ({len(attending_list)})\n"
+                shown_attending = attending_list[:6]  # Show up to 6 names
+                attendance_text += "・".join(shown_attending)
+                if len(attending_list) > 6:
+                    attendance_text += f" 等 {len(attending_list)} 人"
+                attendance_text += "\n\n"
+            
+            # 不出席者 (紅色圓點)
+            if declined_list:
+                attendance_text += f"🔴 **不出席** ({len(declined_list)})\n"
+                shown_declined = declined_list[:6]  # Show up to 6 names
+                attendance_text += "・".join(shown_declined)
+                if len(declined_list) > 6:
+                    attendance_text += f" 等 {len(declined_list)} 人"
+                attendance_text += "\n\n"
+            
+            # 待回覆者 (黃色圓點)
+            if pending_list:
+                attendance_text += f"🟡 **待回覆** ({len(pending_list)})\n"
+                shown_pending = pending_list[:6]  # Show up to 6 names
+                attendance_text += "・".join(shown_pending)
+                if len(pending_list) > 6:
+                    attendance_text += f" 等 {len(pending_list)} 人"
+            
+            # If no one has responded yet
+            if not attendance_text.strip():
+                attendance_text = "尚無回覆"
+            
+            # Find and update attendance field or add it
+            attendance_field_found = False
+            for i, field in enumerate(embed.fields):
+                if "參與狀況" in field.name or "出席" in field.name:
+                    embed.set_field_at(i, name="👥 出席狀況", value=attendance_text, inline=False)
+                    attendance_field_found = True
+                    break
+            
+            if not attendance_field_found:
+                # Remove old participant count field if exists and add new attendance field
+                new_fields = []
+                for field in embed.fields:
+                    if "參與狀況" not in field.name and "出席" not in field.name:
+                        new_fields.append((field.name, field.value, field.inline))
                 
-                # Find and update the participant field
-                for i, field in enumerate(embed.fields):
-                    if field.name == "👥 參與狀況":
-                        embed.set_field_at(i, name="👥 參與狀況", 
-                                         value=count_text, inline=True)
-                        break
-                
-                await message.edit(embed=embed)
-        
-        except Exception:
+                # Rebuild embed with new attendance field
+                embed.clear_fields()
+                for name, value, inline in new_fields:
+                    embed.add_field(name=name, value=value, inline=inline)
+                embed.add_field(name="👥 出席狀況", value=attendance_text, inline=False)
+            
+            await message.edit(embed=embed, view=self)
+            
+        except Exception as e:
             # Silently fail - not critical
-            pass
+            pass 
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Check interaction and hide/show control button based on organizer status."""
+        try:
+            meeting = Meeting.objects(id=self.meeting_id).first()
+            if not meeting:
+                return False
+            
+            # Hide control button for non-organizers
+            if interaction.user.id != meeting.organizer_id:
+                self.control_button.disabled = True
+                self.control_button.style = discord.ButtonStyle.gray
+            else:
+                self.control_button.disabled = False
+                self.control_button.style = discord.ButtonStyle.secondary
+            
+            return True
+        except Exception:
+            return False
     
-    def _get_status_color(self, status: str) -> discord.Color:
-        """Get color for attendance status."""
-        colors = {
-            'attending': discord.Color.green(),
-            'not_attending': discord.Color.red(),
-            'maybe': discord.Color.orange()
-        }
-        return colors.get(status, discord.Color.blue()) 
+    async def show_control_panel(self, interaction: discord.Interaction):
+        """Show the meeting control panel (organizer only)."""
+        try:
+            meeting = Meeting.objects(id=self.meeting_id).first()
+            if not meeting:
+                await interaction.response.send_message("會議不存在", ephemeral=True)
+                return
+            
+            # Check if user is organizer
+            if interaction.user.id != meeting.organizer_id:
+                await interaction.response.send_message("只有會議發起人可以使用此功能", ephemeral=True)
+                return
+            
+            # Import here to avoid circular import
+            from .meeting_control_view import MeetingControlView
+            
+            # Create control panel view
+            control_view = MeetingControlView(self.meeting_id, meeting.organizer_id)
+            
+            # Create embed for control panel
+            embed = discord.Embed(
+                title="🎛️ 會議控制面板",
+                description=f"**{meeting.title}**\n\n請選擇要執行的操作：",
+                color=0x007AFF
+            )
+            embed.add_field(
+                name="📅 會議時間",
+                value=f"<t:{int(meeting.scheduled_time.timestamp())}:F>",
+                inline=False
+            )
+            
+            await interaction.response.send_message(embed=embed, view=control_view, ephemeral=True)
+            
+        except Exception as e:
+            await interaction.response.send_message("無法開啟控制面板，請稍後再試", ephemeral=True) 

@@ -10,18 +10,32 @@ import pytz
 from discord.ext import commands
 from core.models import Meeting, MeetingAttendee
 from ..views.meeting_confirmation_view import MeetingConfirmationView
+from ..views.meeting_attendance_view import MeetingAttendanceView
 
 
 class MeetingScheduler:
     """Service for scheduling meetings."""
     
-    def __init__(self, bot, config, time_parser):
+    def __init__(self, bot, config):
         self.bot = bot
         self.config = config
-        self.time_parser = time_parser
+        self.time_parser = None  # Will be initialized when needed
         self.logger = bot.logger
         self.timezone = pytz.timezone(config.meetings.default_timezone)
         
+    async def _get_time_parser(self):
+        """Get or create time parser agent."""
+        if not self.time_parser:
+            from ..agents.time_parser import TimeParserAgent
+            
+            # Create time parser with correct parameters
+            self.time_parser = TimeParserAgent(self.bot, self.config)
+            
+            # Initialize the time parser
+            await self.time_parser.initialize()
+        
+        return self.time_parser
+    
     async def handle_meeting_request(self, interaction: discord.Interaction,
                                    time_str: str, participants_str: str,
                                    title: str = None, description: str = None,
@@ -41,7 +55,15 @@ class MeetingScheduler:
         
         try:
             # Parse time expression
-            time_result = await self.time_parser.parse_time(
+            time_parser = await self._get_time_parser()
+            if not time_parser:
+                await interaction.followup.send(
+                    "❌ AI時間解析服務不可用，請稍後再試。",
+                    ephemeral=True
+                )
+                return
+                
+            time_result = await time_parser.parse_time(
                 time_str, interaction.user.id, interaction.guild.id
             )
             
@@ -172,8 +194,14 @@ class MeetingScheduler:
             color=discord.Color.blue()
         )
         
-        # Time information
-        time_text = f"**{meeting_data['interpreted_as']}**"
+        # Time information - use parsed time instead of interpreted_as to avoid encoding issues
+        try:
+            parsed_time = datetime.fromisoformat(meeting_data['parsed_time'])
+            time_text = f"**{parsed_time.strftime('%Y/%m/%d %H:%M')}**"
+        except:
+            # Fallback to interpreted_as if parsing fails
+            time_text = f"**{meeting_data.get('interpreted_as', '時間解析錯誤')}**"
+            
         if meeting_data['confidence'] < 90:
             time_text += f" (信心度: {meeting_data['confidence']}%)"
         
@@ -249,10 +277,14 @@ class MeetingScheduler:
             Created Meeting object
         """
         try:
+            self.logger.debug(f"Creating meeting with data: {meeting_data}")
+            
             # Parse scheduled time
             scheduled_time = datetime.fromisoformat(meeting_data['parsed_time'])
+            self.logger.debug(f"Parsed scheduled time: {scheduled_time}")
             
             # Create meeting document
+            self.logger.debug("Creating Meeting object...")
             meeting = Meeting(
                 guild_id=interaction.guild.id,
                 organizer_id=interaction.user.id,
@@ -263,47 +295,58 @@ class MeetingScheduler:
                 max_attendees=meeting_data.get('max_attendees'),
                 recording_enabled=self.config.meetings.auto_start_recording
             )
+            self.logger.debug("Meeting object created successfully")
             
             # Add organizer as attendee
+            self.logger.debug("Adding organizer as attendee...")
             meeting.add_attendee(
                 interaction.user.id, 
                 interaction.user.display_name, 
                 'attending'
             )
+            self.logger.debug("Organizer added successfully")
             
             # Add invited participants
             participants = meeting_data.get('participants', [])
+            self.logger.debug(f"Adding {len(participants)} participants...")
             for participant in participants:
                 meeting.add_attendee(
                     participant.id,
                     participant.display_name,
                     'pending'
                 )
+            self.logger.debug("All participants added successfully")
             
             # Save meeting
+            self.logger.debug("Saving meeting to database...")
             meeting.save()
+            self.logger.debug(f"Meeting saved successfully with ID: {meeting.id}")
             
+            # Log meeting creation
             self.logger.info(f"Meeting created: {meeting.id} by {interaction.user.id}")
             
             return meeting
             
         except Exception as e:
             self.logger.error(f"Failed to create meeting: {e}")
+            self.logger.error(f"Meeting data: {meeting_data}")
             raise
     
     async def announce_meeting(self, meeting: Meeting, 
                              interaction: discord.Interaction) -> discord.Message:
         """
-        Announce the meeting in the designated channel.
+        Announce the meeting with Apple-style design and dual views.
         
         Args:
-            meeting: Meeting object
+            meeting: Meeting object to announce
             interaction: Discord interaction
             
         Returns:
-            Announcement message
+            The announcement message
         """
         try:
+            self.logger.debug(f"Starting meeting announcement for meeting {meeting.id}")
+            
             # Determine announcement channel
             if self.config.meetings.announcement_channel_id:
                 channel = interaction.guild.get_channel(
@@ -315,92 +358,64 @@ class MeetingScheduler:
             if not channel:
                 channel = interaction.channel
             
-            # Create announcement embed
-            embed = self._create_announcement_embed(meeting, interaction.guild)
+            self.logger.debug(f"Announcement channel determined: {channel.id}")
             
-            # Create announcement view (for attendance)
-            from ..views.meeting_attendance_view import MeetingAttendanceView
-            view = MeetingAttendanceView(meeting.id)
+            # Create the announcement embed
+            embed = discord.Embed(
+                title=f"📅 {meeting.title}",
+                description=meeting.description or "點擊下方按鈕來回應出席狀況",
+                color=0x007AFF
+            )
             
-            # Send announcement
-            message = await channel.send(embed=embed, view=view)
-            
-            # Update meeting with announcement info
-            meeting.announcement_message_id = message.id
-            meeting.announcement_channel_id = channel.id
-            meeting.save()
-            
-            self.logger.info(f"Meeting announced: {meeting.id} in {channel.id}")
-            
-            return message
-            
-        except Exception as e:
-            self.logger.error(f"Failed to announce meeting: {e}")
-            raise
-    
-    def _create_announcement_embed(self, meeting: Meeting, 
-                                 guild: discord.Guild) -> discord.Embed:
-        """Create meeting announcement embed."""
-        embed = discord.Embed(
-            title="📅 新會議邀請",
-            description=f"**{meeting.title}**",
-            color=discord.Color.green()
-        )
-        
-        # Time information
-        local_time = meeting.scheduled_time.replace(
-            tzinfo=pytz.timezone(meeting.timezone)
-        )
-        time_str = local_time.strftime('%Y年%m月%d日 %A %H:%M')
-        
-        embed.add_field(
-            name="⏰ 時間",
-            value=time_str,
-            inline=True
-        )
-        
-        # Organizer
-        organizer = guild.get_member(meeting.organizer_id)
-        organizer_name = organizer.display_name if organizer else "未知用戶"
-        
-        embed.add_field(
-            name="👤 發起人",
-            value=organizer_name,
-            inline=True
-        )
-        
-        # Attendee count
-        attending_count = meeting.get_attending_count()
-        total_invited = len(meeting.attendees)
-        
-        if meeting.max_attendees:
-            count_text = f"{attending_count}/{meeting.max_attendees} 人"
-        else:
-            count_text = f"{attending_count} 人確認參加"
-        
-        embed.add_field(
-            name="👥 參與狀況",
-            value=count_text,
-            inline=True
-        )
-        
-        # Description
-        if meeting.description:
             embed.add_field(
-                name="📋 描述",
-                value=meeting.description,
+                name="🕐 時間",
+                value=f"<t:{int(meeting.scheduled_time.timestamp())}:F>",
                 inline=False
             )
-        
-        # Meeting ID for reference
-        embed.set_footer(text=f"會議 ID: {meeting.id}")
-        
-        return embed
+            
+            embed.add_field(
+                name="👤 發起人",
+                value=f"<@{meeting.organizer_id}>",
+                inline=True
+            )
+            
+            # Only show location if the meeting has this attribute
+            if hasattr(meeting, 'location') and meeting.location:
+                embed.add_field(
+                    name="📍 地點", 
+                    value=meeting.location,
+                    inline=True
+                )
+            
+            # Add attendance status field (will be updated by view)
+            embed.add_field(
+                name="📊 出席狀況",
+                value="🟡 **待回覆** (1)\n<@{}>".format(meeting.organizer_id),
+                inline=False
+            )
+            
+            # Create attendance view
+            view = MeetingAttendanceView(str(meeting.id))
+            
+            # Send the announcement
+            announcement_msg = await channel.send(embed=embed, view=view)
+            
+            # Store announcement message info
+            meeting.announcement_channel_id = channel.id
+            meeting.announcement_message_id = announcement_msg.id
+            meeting.save()
+            
+            self.logger.info(f"Meeting announcement published: {meeting.title}")
+            return announcement_msg
+            
+        except Exception as e:
+            self.logger.error(f"Failed to publish meeting announcement: {e}")
+            return None
     
     def _format_datetime(self, datetime_str: str) -> str:
         """Format datetime string for display."""
         try:
             dt = datetime.fromisoformat(datetime_str)
-            return dt.strftime('%Y年%m月%d日 %H:%M')
+            return dt.strftime('%Y/%m/%d %H:%M')
         except:
             return datetime_str 

@@ -115,7 +115,7 @@ class ReminderService:
         local_time = meeting.scheduled_time.replace(
             tzinfo=pytz.timezone(meeting.timezone)
         )
-        time_str = local_time.strftime('%Y年%m月%d日 %A %H:%M')
+        time_str = local_time.strftime('%Y/%m/%d %H:%M')
         
         embed.add_field(
             name="⏰ 會議時間",
