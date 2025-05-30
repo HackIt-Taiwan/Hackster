@@ -302,18 +302,18 @@ class MeetingScheduler:
             meeting.add_attendee(
                 interaction.user.id, 
                 interaction.user.display_name, 
-                'attending'
+                'attending'  # Organizer is attending by default
             )
             self.logger.debug("Organizer added successfully")
             
-            # Add invited participants
+            # Add invited participants as pending
             participants = meeting_data.get('participants', [])
             self.logger.debug(f"Adding {len(participants)} participants...")
             for participant in participants:
                 meeting.add_attendee(
                     participant.id,
                     participant.display_name,
-                    'pending'
+                    'pending'  # All invited participants default to pending
                 )
             self.logger.debug("All participants added successfully")
             
@@ -369,8 +369,8 @@ class MeetingScheduler:
             
             embed.add_field(
                 name="🕐 時間",
-                value=f"<t:{int(meeting.scheduled_time.timestamp())}:F>",
-                inline=False
+                value=f"**{meeting.scheduled_time.strftime('%Y/%m/%d %H:%M')}**",
+                inline=True
             )
             
             embed.add_field(
@@ -386,12 +386,51 @@ class MeetingScheduler:
                     value=meeting.location,
                     inline=True
                 )
+            else:
+                # Add empty field to force new line
+                embed.add_field(
+                    name="\u200b",  # Invisible character
+                    value="\u200b",
+                    inline=True
+                )
             
-            # Add attendance status field (will be updated by view)
+            # Add initial attendance status - simplified three-column format
+            # Count attendees by status
+            attending_count = 0
+            pending_count = 0
+            declined_count = 0
+            
+            attending_list = []
+            pending_list = []
+            
+            for attendee in meeting.attendees:
+                mention = f"<@{attendee.user_id}>"
+                if attendee.status == 'attending':
+                    attending_count += 1
+                    attending_list.append(mention)
+                elif attendee.status == 'pending':
+                    pending_count += 1
+                    pending_list.append(mention)
+                elif attendee.status == 'not_attending':
+                    declined_count += 1
+            
+            # Add three fields in a row for attendance
             embed.add_field(
-                name="📊 出席狀況",
-                value="🟡 **待回覆** (1)\n<@{}>".format(meeting.organizer_id),
-                inline=False
+                name=f"出席 ({attending_count})",
+                value="\n".join(attending_list) if attending_list else "無",
+                inline=True
+            )
+            
+            embed.add_field(
+                name=f"無法出席 ({declined_count})",
+                value="無",
+                inline=True
+            )
+            
+            embed.add_field(
+                name=f"待定 ({pending_count})",
+                value="\n".join(pending_list) if pending_list else "無",
+                inline=True
             )
             
             # Create attendance view

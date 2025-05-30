@@ -25,30 +25,29 @@ class MeetingControlView(discord.ui.View):
             return False
         return True
     
-    @discord.ui.button(label="新增與會人員", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="新增與會人員", style=discord.ButtonStyle.primary, custom_id="add_attendees")
     async def add_attendees(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Add attendees to the meeting."""
-        # Set custom_id for persistence
-        if not button.custom_id:
-            button.custom_id = f"meeting_control_add_{self.meeting_id}"
+        """Add new attendees to the meeting."""
+        # Update custom_id with meeting_id
+        button.custom_id = f"add_attendees_{self.meeting_id}"
+        
         modal = AddAttendeesModal(self.meeting_id)
         await interaction.response.send_modal(modal)
     
-    @discord.ui.button(label="修改時間", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="修改時間", style=discord.ButtonStyle.secondary, custom_id="reschedule")
     async def reschedule_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Reschedule the meeting."""
-        # Set custom_id for persistence
-        if not button.custom_id:
-            button.custom_id = f"meeting_control_reschedule_{self.meeting_id}"
+        # Update custom_id with meeting_id
+        button.custom_id = f"reschedule_{self.meeting_id}"
+        
         modal = RescheduleMeetingModal(self.meeting_id)
         await interaction.response.send_modal(modal)
     
-    @discord.ui.button(label="取消會議", style=discord.ButtonStyle.red)
+    @discord.ui.button(label="取消會議", style=discord.ButtonStyle.danger, custom_id="cancel_meeting")
     async def cancel_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Cancel the meeting with confirmation."""
-        # Set custom_id for persistence
-        if not button.custom_id:
-            button.custom_id = f"meeting_control_cancel_{self.meeting_id}"
+        """Cancel the meeting."""
+        # Update custom_id with meeting_id
+        button.custom_id = f"cancel_meeting_{self.meeting_id}"
         view = CancelConfirmationView(self.meeting_id)
         embed = discord.Embed(
             title="確認取消會議",
@@ -192,20 +191,29 @@ class RescheduleMeetingModal(discord.ui.Modal):
                 await interaction.response.send_message("會議不存在", ephemeral=True)
                 return
             
-            # Defer response since AI parsing might take time
-            await interaction.response.defer(ephemeral=True)
+            # Send initial "processing" message
+            processing_embed = discord.Embed(
+                title="⏳ 正在處理中...",
+                description="正在解析時間並更新會議，請稍候",
+                color=0x8E8E93
+            )
+            await interaction.response.send_message(embed=processing_embed, ephemeral=True)
             
             # Parse the new time using the AI time parser
             try:
                 # Get the meetings module to access the time parser
                 meetings_module = interaction.client.modules.get('meetings')
                 if not meetings_module:
+                    # Delete processing message and show error
+                    await interaction.delete_original_response()
                     await interaction.followup.send("系統錯誤：找不到會議模組", ephemeral=True)
                     return
                 
                 # Use the scheduler's time parser
                 time_parser = await meetings_module.scheduler._get_time_parser()
                 if not time_parser:
+                    # Delete processing message and show error
+                    await interaction.delete_original_response()
                     await interaction.followup.send("AI 時間解析服務不可用", ephemeral=True)
                     return
                 
@@ -233,6 +241,8 @@ class RescheduleMeetingModal(discord.ui.Modal):
                         inline=False
                     )
                     
+                    # Delete processing message and show error
+                    await interaction.delete_original_response()
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     return
                 
@@ -253,6 +263,8 @@ class RescheduleMeetingModal(discord.ui.Modal):
                     new_time = tz.localize(new_time)
                 
                 if new_time <= now:
+                    # Delete processing message and show error
+                    await interaction.delete_original_response()
                     await interaction.followup.send(
                         "⚠️ 會議時間必須在未來", ephemeral=True
                     )
@@ -263,19 +275,19 @@ class RescheduleMeetingModal(discord.ui.Modal):
                 meeting.scheduled_time = new_time
                 meeting.save()
                 
-                # Create success response
+                # Create success response and replace processing message
                 embed = discord.Embed(
                     title="✓ 會議時間已更新",
                     color=0x34C759
                 )
                 embed.add_field(
                     name="原時間",
-                    value=f"<t:{int(old_time.timestamp())}:F>",
+                    value=f"**{old_time.strftime('%Y/%m/%d %H:%M')}**",
                     inline=False
                 )
                 embed.add_field(
                     name="新時間", 
-                    value=f"<t:{int(new_time.timestamp())}:F>",
+                    value=f"**{new_time.strftime('%Y/%m/%d %H:%M')}**",
                     inline=False
                 )
                 
@@ -286,7 +298,16 @@ class RescheduleMeetingModal(discord.ui.Modal):
                         inline=False
                     )
                 
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                # Edit the processing message to show success, then auto-delete after 3 seconds
+                await interaction.edit_original_response(embed=embed)
+                
+                # Auto-delete the success message after 3 seconds
+                import asyncio
+                await asyncio.sleep(3)
+                try:
+                    await interaction.delete_original_response()
+                except:
+                    pass  # Ignore if already deleted
                 
                 # Notify attendees and update announcement
                 await self._notify_reschedule(interaction, meeting, old_time, new_time)
@@ -298,11 +319,15 @@ class RescheduleMeetingModal(discord.ui.Modal):
                     color=0xFF3B30
                 )
                 error_embed.set_footer(text=f"錯誤詳情：{str(e)}")
+                
+                # Delete processing message and show error
+                await interaction.delete_original_response()
                 await interaction.followup.send(embed=error_embed, ephemeral=True)
                 
         except Exception as e:
             # Fallback error message
             try:
+                await interaction.delete_original_response()
                 await interaction.followup.send("修改失敗，請稍後再試", ephemeral=True)
             except:
                 pass
@@ -325,7 +350,7 @@ class RescheduleMeetingModal(discord.ui.Modal):
                                     embed.set_field_at(
                                         i, 
                                         name=field.name,
-                                        value=f"<t:{int(new_time.timestamp())}:F>",
+                                        value=f"**{new_time.strftime('%Y/%m/%d %H:%M')}**",
                                         inline=field.inline
                                     )
                                     break
@@ -342,12 +367,12 @@ class RescheduleMeetingModal(discord.ui.Modal):
             )
             notify_embed.add_field(
                 name="原時間",
-                value=f"<t:{int(old_time.timestamp())}:F>",
+                value=f"**{old_time.strftime('%Y/%m/%d %H:%M')}**",
                 inline=True
             )
             notify_embed.add_field(
                 name="新時間",
-                value=f"<t:{int(new_time.timestamp())}:F>",
+                value=f"**{new_time.strftime('%Y/%m/%d %H:%M')}**",
                 inline=True
             )
             

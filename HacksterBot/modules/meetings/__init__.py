@@ -57,6 +57,9 @@ class MeetingsModule(ModuleBase):
             # Register commands
             await self._register_commands()
             
+            # Register persistent views for meeting buttons
+            await self._register_persistent_views()
+            
             self.logger.info("Meetings module setup completed")
             
         except Exception as e:
@@ -104,6 +107,30 @@ class MeetingsModule(ModuleBase):
         async def meeting_info_command(interaction: discord.Interaction, 會議id: str):
             """View detailed meeting information."""
             await self.meeting_manager.show_meeting_info(interaction, 會議id)
+    
+    async def _register_persistent_views(self):
+        """Register persistent views to handle button interactions after bot restart."""
+        from .views.meeting_attendance_view import MeetingAttendanceView
+        from .views.meeting_control_view import MeetingControlView
+        
+        # Get all active meetings to register their views
+        try:
+            from core.models import Meeting
+            active_meetings = Meeting.objects(status__in=['scheduled', 'started']).all()
+            
+            for meeting in active_meetings:
+                # Register attendance view for each active meeting
+                attendance_view = MeetingAttendanceView(str(meeting.id))
+                self.bot.add_view(attendance_view)
+                
+                # Register control view for meetings with organizers
+                control_view = MeetingControlView(str(meeting.id), meeting.organizer_id)
+                self.bot.add_view(control_view)
+            
+            self.logger.info(f"Registered persistent views for {len(active_meetings)} active meetings")
+            
+        except Exception as e:
+            self.logger.error(f"Error registering persistent views: {e}")
     
     # Public API methods for other modules
     async def get_meeting_by_id(self, meeting_id: str):

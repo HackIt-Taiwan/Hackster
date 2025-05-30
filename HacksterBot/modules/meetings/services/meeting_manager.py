@@ -321,7 +321,7 @@ class MeetingManager:
             
             embed.add_field(
                 name="⏰ 結束時間",
-                value=f"<t:{int(meeting.ended_at.timestamp())}:F>",
+                value=f"**{meeting.ended_at.strftime('%Y/%m/%d %H:%M')}**",
                 inline=True
             )
             
@@ -562,7 +562,7 @@ class MeetingManager:
             
             embed.add_field(
                 name="⏰ 開始時間",
-                value=f"<t:{int(meeting.started_at.timestamp())}:F>",
+                value=f"**{meeting.started_at.strftime('%Y/%m/%d %H:%M')}**",
                 inline=True
             )
             
@@ -570,7 +570,7 @@ class MeetingManager:
                 end_time = meeting.started_at + timedelta(minutes=meeting.duration_minutes)
                 embed.add_field(
                     name="⏱️ 預計結束",
-                    value=f"<t:{int(end_time.timestamp())}:t>",
+                    value=f"**{end_time.strftime('%Y/%m/%d %H:%M')}**",
                     inline=True
                 )
             
@@ -611,7 +611,7 @@ class MeetingManager:
             
             embed.add_field(
                 name="📅 原定時間",
-                value=f"<t:{int(meeting.scheduled_time.timestamp())}:F>",
+                value=f"**{meeting.scheduled_time.strftime('%Y/%m/%d %H:%M')}**",
                 inline=True
             )
             
