@@ -114,6 +114,7 @@ class RecordingManager:
                             recorder.record_meeting_audio(vc_id)
                         )
                         chosen_bot.meeting_voice_channel_info[vc_id]["recording_task"] = recording_task
+                        chosen_bot.meeting_voice_channel_info[vc_id]["recorder"] = recorder
                         
                         self.logger.info(f"Assigned bot {chosen_bot.user.name} to record voice channel {voice_channel.name}")
                     except Exception as error:

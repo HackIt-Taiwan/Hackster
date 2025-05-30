@@ -137,19 +137,28 @@ class RecordingBot(commands.Bot):
     async def _handle_user_join_meeting(self, member: discord.Member, voice_channel: discord.VoiceChannel):
         """Handle user joining an existing meeting."""
         info = self.meeting_voice_channel_info[voice_channel.id]
+        current_time = time.time()
+        
         info["active_participants"].add(member.id)
         info["all_participants"].add(member.id)
         
+        # Track join time for audio synchronization
         if member.id not in info["user_join_time"]:
-            info["user_join_time"][member.id] = time.time()
+            info["user_join_time"][member.id] = current_time
+            # First time joining - audio sink handles this automatically
         else:
-            # If user rejoins, update recording status
-            current_time = time.time()
-            if not info["user_recording_status"].get(member.id, False):
-                info["user_join_time"][member.id] = current_time
-                info["user_recording_status"][member.id] = True
-                if member.id in info["user_leave_time"]:
-                    del info["user_leave_time"][member.id]
+            # User rejoining after leaving
+            info["user_join_time"][member.id] = current_time
+            # Get audio sink from recorder for rejoin tracking
+            recorder = info.get("recorder")
+            if recorder and hasattr(recorder, "audio_sink") and recorder.audio_sink:
+                recorder.audio_sink.mark_user_rejoin(member.id, current_time)
+                self.logger.info(f"User {member.display_name} rejoined, audio sync enabled")
+                
+        # Update recording status
+        info["user_recording_status"][member.id] = True
+        if member.id in info["user_leave_time"]:
+            del info["user_leave_time"][member.id]
                     
         # Update forum thread
         thread_id = info["forum_thread_id"]
@@ -169,10 +178,18 @@ class RecordingBot(commands.Bot):
     async def _handle_user_leave_meeting(self, member: discord.Member, voice_channel: discord.VoiceChannel):
         """Handle user leaving a meeting."""
         info = self.meeting_voice_channel_info[voice_channel.id]
+        current_time = time.time()
+        
         if member.id in info["active_participants"]:
             info["active_participants"].remove(member.id)
-            info["user_leave_time"][member.id] = time.time()
+            info["user_leave_time"][member.id] = current_time
             info["user_recording_status"][member.id] = False
+            
+            # Notify audio sink about user leaving for gap tracking
+            recorder = info.get("recorder")
+            if recorder and hasattr(recorder, "audio_sink") and recorder.audio_sink:
+                recorder.audio_sink.mark_user_leave(member.id, current_time)
+                self.logger.info(f"User {member.display_name} left, audio gap tracking enabled")
             
         # Update forum thread
         thread_id = info.get("forum_thread_id")
