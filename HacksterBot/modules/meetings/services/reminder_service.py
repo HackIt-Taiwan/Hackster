@@ -44,10 +44,10 @@ class ReminderService:
             self.logger.error(f"Reminder task error: {e}")
     
     async def _process_pending_reminders(self):
-        """Process all pending reminders."""
+        """Process all pending reminders and check for meetings to start."""
         now = datetime.utcnow()
         
-        # Find all pending reminders that should be sent
+        # Process pending reminders
         pending_reminders = MeetingReminder.objects(
             scheduled_time__lte=now,
             is_sent=False
@@ -75,6 +75,9 @@ class ReminderService:
                     reminder.error_message = f"Failed after {reminder.retry_count} retries: {e}"
                 
                 reminder.save()
+        
+        # Check for meetings that should start now
+        await self._check_meetings_to_start(now)
     
     async def _send_reminder(self, reminder: MeetingReminder):
         """Send a specific reminder."""
@@ -230,6 +233,37 @@ class ReminderService:
                         failed_count += 1
         
         self.logger.info(f"Reminder sent to {sent_count} members, {failed_count} failed")
+    
+    async def _check_meetings_to_start(self, now: datetime):
+        """Check for meetings that should start now."""
+        try:
+            # Find meetings that should start now (within 1 minute window)
+            start_window = now + timedelta(minutes=1)
+            
+            meetings_to_start = Meeting.objects(
+                scheduled_time__lte=start_window,
+                scheduled_time__gte=now - timedelta(minutes=1),
+                status='scheduled'
+            )
+            
+            for meeting in meetings_to_start:
+                try:
+                    # Get the meeting manager from the bot
+                    if hasattr(self.bot, 'modules') and 'meetings' in self.bot.modules:
+                        meetings_module = self.bot.modules['meetings']
+                        if meetings_module.meeting_manager:
+                            await meetings_module.meeting_manager.start_meeting(str(meeting.id))
+                            self.logger.info(f"Auto-started meeting {meeting.id} at scheduled time")
+                        else:
+                            self.logger.error("Meeting manager not available for auto-start")
+                    else:
+                        self.logger.error("Meetings module not available for auto-start")
+                        
+                except Exception as e:
+                    self.logger.error(f"Failed to auto-start meeting {meeting.id}: {e}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error checking meetings to start: {e}")
     
     async def schedule_meeting_reminders(self, meeting: Meeting):
         """

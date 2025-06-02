@@ -18,6 +18,7 @@ import discord
 from discord.ext import commands
 
 from core.models import Meeting, MeetingAttendee
+from ..utils.timezone_utils import get_current_time_gmt8, format_datetime_gmt8
 
 
 class MeetingManager:
@@ -52,7 +53,7 @@ class MeetingManager:
             embed = discord.Embed(
                 title="📅 我的會議",
                 color=discord.Color.blue(),
-                timestamp=datetime.utcnow()
+                timestamp=get_current_time_gmt8()
             )
             
             # Add organized meetings
@@ -183,7 +184,7 @@ class MeetingManager:
             
             # Update meeting status
             meeting.status = 'cancelled'
-            meeting.cancelled_at = datetime.utcnow()
+            meeting.cancelled_at = get_current_time_gmt8()
             meeting.save()
             
             # Cancel reminders
@@ -194,9 +195,11 @@ class MeetingManager:
             # Notify attendees
             await self._notify_meeting_cancelled(meeting)
             
-            # Delete voice channel if exists
+            # Delete voice and text channels if they exist
             if meeting.voice_channel_id:
                 await self._cleanup_voice_channel(meeting.voice_channel_id)
+            if meeting.text_channel_id:
+                await self._cleanup_text_channel(meeting.text_channel_id)
             
             self.logger.info(f"Meeting {meeting_id} cancelled by user {user_id}")
             return True
@@ -226,7 +229,7 @@ class MeetingManager:
             
             # Update meeting status
             meeting.status = 'started'
-            meeting.started_at = datetime.utcnow()
+            meeting.started_at = get_current_time_gmt8()
             meeting.voice_channel_id = voice_channel.id
             meeting.save()
             
@@ -261,15 +264,17 @@ class MeetingManager:
             
             # Update meeting status
             meeting.status = 'ended'
-            meeting.ended_at = datetime.utcnow()
+            meeting.ended_at = get_current_time_gmt8()
             meeting.save()
             
             # Notify attendees that meeting has ended
             await self._notify_meeting_ended(meeting)
             
-            # Clean up voice channel after delay
+            # Clean up voice and text channels after delay
             if meeting.voice_channel_id:
                 await self._cleanup_voice_channel(meeting.voice_channel_id)
+            if meeting.text_channel_id:
+                await self._cleanup_text_channel(meeting.text_channel_id)
             
             self.logger.info(f"Meeting {meeting_id} ended")
             return True
@@ -292,7 +297,7 @@ class MeetingManager:
             if success:
                 # Update meeting with recording info
                 meeting.recording_started = False
-                meeting.recording_stopped_at = datetime.utcnow()
+                meeting.recording_stopped_at = get_current_time_gmt8()
                 meeting.save()
                 
                 self.logger.info(f"Stopped recording for meeting {meeting.id} in channel {voice_channel_id}")
@@ -316,12 +321,12 @@ class MeetingManager:
                 title="✅ 會議已結束",
                 description=f"**{meeting.title}** 已結束。",
                 color=discord.Color.green(),
-                timestamp=datetime.utcnow()
+                timestamp=get_current_time_gmt8()
             )
             
             embed.add_field(
                 name="⏰ 結束時間",
-                value=f"**{meeting.ended_at.strftime('%Y/%m/%d %H:%M')}**",
+                value=f"**{format_datetime_gmt8(meeting.ended_at)}**",
                 inline=True
             )
             
@@ -360,7 +365,7 @@ class MeetingManager:
         )
         
         # Meeting details
-        time_str = meeting.scheduled_time.strftime("%Y/%m/%d %H:%M")
+        time_str = format_datetime_gmt8(meeting.scheduled_time)
         duration_str = f"{meeting.duration_minutes}分鐘"
         
         embed.add_field(
@@ -483,35 +488,347 @@ class MeetingManager:
         return color_map.get(status, discord.Color.default())
     
     async def _create_meeting_voice_channel(self, meeting: Meeting, guild: discord.Guild):
-        """Create a voice channel for the meeting."""
+        """Create a voice channel for the meeting with advanced category logic."""
         try:
-            # Find meeting category
-            category = None
-            category_name = self.config.meetings.meeting_category_name
-            for cat in guild.categories:
-                if cat.name == category_name:
-                    category = cat
-                    break
+            # Get the channel where meeting was scheduled
+            announcement_channel = guild.get_channel(meeting.announcement_channel_id)
             
-            if not category:
-                # Create category if it doesn't exist
-                category = await guild.create_category(category_name)
+            # First try to find "會議室" in the same category as announcement channel
+            target_category = None
+            meeting_room_channel = None
+            meeting_record_forum = None
             
-            # Create voice channel
+            if announcement_channel and hasattr(announcement_channel, 'category') and announcement_channel.category:
+                # Check if the announcement channel's category has "會議室" voice channel and "會議記錄" forum
+                for channel in announcement_channel.category.channels:
+                    if isinstance(channel, discord.VoiceChannel) and channel.name == "會議室":
+                        meeting_room_channel = channel
+                    elif isinstance(channel, discord.ForumChannel) and channel.name == "會議記錄":
+                        meeting_record_forum = channel
+                
+                # If both exist, use this category
+                if meeting_room_channel and meeting_record_forum:
+                    target_category = announcement_channel.category
+                    self.logger.info(f"Found meeting infrastructure in category: {target_category.name}")
+            
+            # If not found, look for or create "公共會議空間" category
+            if not target_category:
+                public_meeting_category_name = "公共會議空間"
+                for cat in guild.categories:
+                    if cat.name == public_meeting_category_name:
+                        target_category = cat
+                        break
+                
+                if not target_category:
+                    # Create the public meeting category
+                    target_category = await guild.create_category(public_meeting_category_name)
+                    self.logger.info(f"Created new category: {public_meeting_category_name}")
+                
+                # Check if this category has the required channels
+                for channel in target_category.channels:
+                    if isinstance(channel, discord.VoiceChannel) and channel.name == "會議室":
+                        meeting_room_channel = channel
+                    elif isinstance(channel, discord.ForumChannel) and channel.name == "會議記錄":
+                        meeting_record_forum = channel
+                
+                # Create missing infrastructure
+                if not meeting_room_channel:
+                    meeting_room_channel = await target_category.create_voice_channel(
+                        name="會議室",
+                        reason="Created meeting room for meeting infrastructure"
+                    )
+                    self.logger.info("Created '會議室' voice channel")
+                
+                if not meeting_record_forum:
+                    meeting_record_forum = await target_category.create_forum_channel(
+                        name="會議記錄",
+                        reason="Created meeting record forum for meeting infrastructure"
+                    )
+                    self.logger.info("Created '會議記錄' forum channel")
+            
+            # Create the actual meeting voice channel
             channel_name = f"🎤 {meeting.title}"
             if len(channel_name) > 100:  # Discord limit
                 channel_name = f"🎤 {meeting.title[:90]}..."
             
-            voice_channel = await category.create_voice_channel(
+            # Set up permissions for meeting participants
+            overwrites = {}
+            
+            # Default permissions - deny everyone except meeting participants
+            overwrites[guild.default_role] = discord.PermissionOverwrite(
+                view_channel=False,
+                connect=False
+            )
+            
+            # Allow meeting organizer and attendees
+            organizer = guild.get_member(meeting.organizer_id)
+            if organizer:
+                overwrites[organizer] = discord.PermissionOverwrite(
+                    view_channel=True,
+                    connect=True,
+                    speak=True,
+                    use_voice_activation=True,
+                    priority_speaker=True  # Give organizer priority
+                )
+            
+            # Add permissions for all attendees
+            for attendee in meeting.attendees:
+                if attendee.status == 'attending':  # Only confirmed attendees
+                    member = guild.get_member(attendee.user_id)
+                    if member:
+                        overwrites[member] = discord.PermissionOverwrite(
+                            view_channel=True,
+                            connect=True,
+                            speak=True,
+                            use_voice_activation=True
+                        )
+            
+            # Create the meeting voice channel
+            voice_channel = await target_category.create_voice_channel(
                 name=channel_name,
+                overwrites=overwrites,
                 reason=f"Meeting: {meeting.title}"
             )
             
+            # Create corresponding text channel for meeting coordination
+            text_channel_name = f"📝-{meeting.title.lower().replace(' ', '-')}"
+            if len(text_channel_name) > 100:
+                text_channel_name = f"📝-{meeting.title[:90].lower().replace(' ', '-')}..."
+            
+            text_channel = await target_category.create_text_channel(
+                name=text_channel_name,
+                overwrites=overwrites,
+                reason=f"Meeting text channel: {meeting.title}"
+            )
+            
+            # Update meeting with channel info
+            meeting.voice_channel_id = voice_channel.id
+            meeting.text_channel_id = text_channel.id
+            meeting.save()
+            
+            # Send welcome message to text channel
+            embed = discord.Embed(
+                title="🎯 會議協調頻道",
+                description=f"歡迎參加 **{meeting.title}**！\n\n" +
+                           f"🔊 語音頻道：{voice_channel.mention}\n" +
+                           f"📝 文字頻道：{text_channel.mention}\n\n" +
+                           "請等待錄製機器人加入，會議即將開始錄製。",
+                color=discord.Color.blue()
+            )
+            
+            embed.add_field(
+                name="👤 主辦人",
+                value=f"<@{meeting.organizer_id}>",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="⏰ 會議時間", 
+                value=f"**{meeting.scheduled_time.strftime('%Y/%m/%d %H:%M')}**",
+                inline=True
+            )
+            
+            await text_channel.send(embed=embed)
+            
+            # Schedule recording bot to join and start 5-minute timeout
+            await self._setup_meeting_recording_and_timeout(meeting, voice_channel, text_channel)
+            
+            self.logger.info(f"Created meeting channels - Voice: {voice_channel.id}, Text: {text_channel.id}")
             return voice_channel
             
         except Exception as e:
             self.logger.error(f"Error creating voice channel for meeting {meeting.id}: {e}")
             return None
+    
+    async def _setup_meeting_recording_and_timeout(self, meeting: Meeting, voice_channel: discord.VoiceChannel, text_channel: discord.TextChannel):
+        """Setup recording bot and 5-minute timeout for meeting."""
+        import asyncio
+        
+        try:
+            # Get recording module
+            recording_module = self.bot.modules.get('recording')
+            if not recording_module:
+                self.logger.warning(f"Recording module not available for meeting {meeting.id}")
+                return
+            
+            # Try to get a recording bot to join the voice channel
+            if recording_module.recording_manager:
+                # Get an available recording bot
+                assigned_bot = recording_module.recording_manager.assign_bot_for_meeting()
+                if assigned_bot:
+                    try:
+                        # Connect the recording bot to voice channel
+                        voice_client = await voice_channel.connect(bot=assigned_bot)
+                        self.logger.info(f"Recording bot {assigned_bot.user.name} joined voice channel {voice_channel.id}")
+                        
+                        # Update recording bot's meeting info
+                        assigned_bot.meeting_voice_channel_info[voice_channel.id] = {
+                            "start_time": time.time(),
+                            "active_participants": set(),
+                            "all_participants": set(),
+                            "forum_thread_id": None,
+                            "summary_message_id": None,
+                            "recording_task": None,
+                            "user_join_time": {},
+                            "user_leave_time": {},
+                            "user_recording_status": {},
+                            "voice_client": voice_client,
+                            "meeting_id": str(meeting.id),
+                            "text_channel_id": text_channel.id
+                        }
+                        
+                        # Send confirmation to text channel
+                        await text_channel.send("✅ 錄製機器人已加入，會議準備就緒！")
+                        
+                    except Exception as e:
+                        self.logger.error(f"Failed to connect recording bot: {e}")
+                        await text_channel.send("⚠️ 錄製機器人連接失敗，但會議仍可進行。")
+                else:
+                    self.logger.warning("No available recording bot")
+                    await text_channel.send("⚠️ 目前沒有可用的錄製機器人，會議將不會錄製。")
+            
+            # Start 5-minute timeout task
+            asyncio.create_task(self._monitor_meeting_timeout(meeting, voice_channel, text_channel))
+            
+        except Exception as e:
+            self.logger.error(f"Error setting up meeting recording and timeout: {e}")
+    
+    async def _monitor_meeting_timeout(self, meeting: Meeting, voice_channel: discord.VoiceChannel, text_channel: discord.TextChannel):
+        """Monitor meeting for 5-minute timeout if no one joins."""
+        import asyncio
+        import time
+        
+        try:
+            # Wait 5 minutes
+            timeout_minutes = 5
+            timeout_seconds = timeout_minutes * 60
+            
+            self.logger.info(f"Starting {timeout_minutes}-minute timeout monitor for meeting {meeting.id}")
+            
+            # Send initial warning to text channel
+            embed = discord.Embed(
+                title="⏰ 會議超時監控",
+                description=f"會議將在 **{timeout_minutes} 分鐘**內自動取消，除非有參與者加入語音頻道。",
+                color=discord.Color.orange()
+            )
+            timeout_message = await text_channel.send(embed=embed)
+            
+            # Check every 30 seconds
+            check_interval = 30
+            elapsed = 0
+            
+            while elapsed < timeout_seconds:
+                await asyncio.sleep(check_interval)
+                elapsed += check_interval
+                
+                # Refresh voice channel info
+                updated_voice_channel = self.bot.get_channel(voice_channel.id)
+                if not updated_voice_channel:
+                    # Channel was deleted
+                    return
+                
+                # Check if anyone (except bots) joined
+                human_members = [m for m in updated_voice_channel.members if not m.bot]
+                if human_members:
+                    # Someone joined! Cancel timeout
+                    embed = discord.Embed(
+                        title="✅ 會議已開始",
+                        description="參與者已加入，會議正常進行！",
+                        color=discord.Color.green()
+                    )
+                    await timeout_message.edit(embed=embed)
+                    self.logger.info(f"Meeting {meeting.id} started - participants joined")
+                    return
+                
+                # Update timeout message with remaining time
+                remaining_minutes = (timeout_seconds - elapsed) // 60
+                remaining_seconds = (timeout_seconds - elapsed) % 60
+                
+                if remaining_minutes > 0:
+                    remaining_str = f"{remaining_minutes} 分 {remaining_seconds} 秒"
+                else:
+                    remaining_str = f"{remaining_seconds} 秒"
+                
+                embed = discord.Embed(
+                    title="⏰ 會議超時監控",
+                    description=f"會議將在 **{remaining_str}** 後自動取消，除非有參與者加入語音頻道。",
+                    color=discord.Color.orange()
+                )
+                try:
+                    await timeout_message.edit(embed=embed)
+                except:
+                    pass  # Message might be deleted
+            
+            # Timeout reached - cancel meeting
+            self.logger.info(f"Meeting {meeting.id} timed out - no participants joined within {timeout_minutes} minutes")
+            
+            # Update timeout message
+            embed = discord.Embed(
+                title="❌ 會議已自動取消",
+                description=f"由於 {timeout_minutes} 分鐘內無人加入，會議已自動取消。",
+                color=discord.Color.red()
+            )
+            try:
+                await timeout_message.edit(embed=embed)
+            except:
+                pass
+            
+            # Cancel the meeting
+            await self._cancel_meeting_due_to_timeout(meeting, voice_channel, text_channel)
+            
+        except asyncio.CancelledError:
+            # Timeout was cancelled (meeting started normally)
+            self.logger.info(f"Timeout monitor cancelled for meeting {meeting.id}")
+        except Exception as e:
+            self.logger.error(f"Error in meeting timeout monitor: {e}")
+    
+    async def _cancel_meeting_due_to_timeout(self, meeting: Meeting, voice_channel: discord.VoiceChannel, text_channel: discord.TextChannel):
+        """Cancel meeting due to timeout and cleanup."""
+        try:
+            # Update meeting status
+            meeting.status = 'cancelled'
+            meeting.cancelled_at = get_current_time_gmt8()
+            meeting.cancellation_reason = '5分鐘內無人加入自動取消'
+            meeting.save()
+            
+            # Disconnect recording bot if connected
+            recording_module = self.bot.modules.get('recording')
+            if recording_module and recording_module.recording_manager:
+                for bot in recording_module.recording_manager.recording_bots:
+                    if voice_channel.id in bot.meeting_voice_channel_info:
+                        voice_client = bot.meeting_voice_channel_info[voice_channel.id].get('voice_client')
+                        if voice_client:
+                            await voice_client.disconnect()
+                            self.logger.info(f"Disconnected recording bot from voice channel {voice_channel.id}")
+                        
+                        # Clean up meeting info
+                        del bot.meeting_voice_channel_info[voice_channel.id]
+            
+            # Send final message to text channel
+            embed = discord.Embed(
+                title="🔄 清理會議頻道",
+                description="會議頻道將在 30 秒後自動刪除。",
+                color=discord.Color.red()
+            )
+            await text_channel.send(embed=embed)
+            
+            # Notify attendees about cancellation
+            await self._notify_meeting_cancelled(meeting)
+            
+            # Schedule cleanup
+            import asyncio
+            await asyncio.sleep(30)
+            
+            # Delete channels
+            try:
+                await voice_channel.delete(reason="Meeting cancelled due to timeout")
+                await text_channel.delete(reason="Meeting cancelled due to timeout") 
+                self.logger.info(f"Deleted meeting channels for timed out meeting {meeting.id}")
+            except Exception as e:
+                self.logger.error(f"Error deleting timeout meeting channels: {e}")
+                
+        except Exception as e:
+            self.logger.error(f"Error cancelling meeting due to timeout: {e}")
     
     async def _start_meeting_recording(self, meeting: Meeting, voice_channel: discord.VoiceChannel):
         """Start recording for the meeting."""
@@ -527,7 +844,7 @@ class MeetingManager:
             if success:
                 # Update meeting with recording info
                 meeting.recording_started = True
-                meeting.recording_started_at = datetime.utcnow()
+                meeting.recording_started_at = get_current_time_gmt8()
                 meeting.save()
                 
                 self.logger.info(f"Started recording for meeting {meeting.id} in channel {voice_channel.id}")
@@ -551,7 +868,7 @@ class MeetingManager:
                 title="🟢 會議已開始！",
                 description=f"**{meeting.title}** 現在開始了！",
                 color=discord.Color.green(),
-                timestamp=datetime.utcnow()
+                timestamp=get_current_time_gmt8()
             )
             
             embed.add_field(
@@ -562,7 +879,7 @@ class MeetingManager:
             
             embed.add_field(
                 name="⏰ 開始時間",
-                value=f"**{meeting.started_at.strftime('%Y/%m/%d %H:%M')}**",
+                value=f"**{format_datetime_gmt8(meeting.started_at)}**",
                 inline=True
             )
             
@@ -570,7 +887,7 @@ class MeetingManager:
                 end_time = meeting.started_at + timedelta(minutes=meeting.duration_minutes)
                 embed.add_field(
                     name="⏱️ 預計結束",
-                    value=f"**{end_time.strftime('%Y/%m/%d %H:%M')}**",
+                    value=f"**{format_datetime_gmt8(end_time)}**",
                     inline=True
                 )
             
@@ -580,17 +897,36 @@ class MeetingManager:
                 if channel:
                     await channel.send(embed=embed)
             
-            # DM attendees who are marked as attending
+            # DM the organizer and all relevant attendees
+            dm_recipients = set()
+            
+            # Always notify the organizer
+            dm_recipients.add(meeting.organizer_id)
+            
+            # Notify attendees based on their status
             for attendee in meeting.attendees:
-                if attendee.status == 'attending':
-                    try:
-                        member = guild.get_member(attendee.user_id)
-                        if member:
-                            await member.send(embed=embed)
-                    except discord.Forbidden:
-                        pass  # User has DMs disabled
-                    except Exception as e:
-                        self.logger.error(f"Error sending meeting start DM to {attendee.user_id}: {e}")
+                # Send to those who are attending or still pending (they might want to know it started)
+                if attendee.status in ['attending', 'pending']:
+                    dm_recipients.add(attendee.user_id)
+            
+            # Send DMs
+            for user_id in dm_recipients:
+                try:
+                    member = guild.get_member(user_id)
+                    if member:
+                        # Create personalized message
+                        personal_embed = embed.copy()
+                        if user_id == meeting.organizer_id:
+                            personal_embed.description = f"您主辦的會議 **{meeting.title}** 現在開始了！"
+                        else:
+                            personal_embed.description = f"會議 **{meeting.title}** 現在開始了！快來參與吧！"
+                        
+                        await member.send(embed=personal_embed)
+                        self.logger.info(f"Sent meeting start DM to user {user_id}")
+                except discord.Forbidden:
+                    self.logger.debug(f"Cannot send DM to user {user_id} - DMs disabled")
+                except Exception as e:
+                    self.logger.error(f"Error sending meeting start DM to {user_id}: {e}")
                         
         except Exception as e:
             self.logger.error(f"Error notifying meeting started {meeting.id}: {e}")
@@ -606,12 +942,12 @@ class MeetingManager:
                 title="❌ 會議已取消",
                 description=f"**{meeting.title}** 已被主辦人取消。",
                 color=discord.Color.red(),
-                timestamp=datetime.utcnow()
+                timestamp=get_current_time_gmt8()
             )
             
             embed.add_field(
                 name="📅 原定時間",
-                value=f"**{meeting.scheduled_time.strftime('%Y/%m/%d %H:%M')}**",
+                value=f"**{format_datetime_gmt8(meeting.scheduled_time)}**",
                 inline=True
             )
             
@@ -661,6 +997,20 @@ class MeetingManager:
                     
         except Exception as e:
             self.logger.error(f"Error cleaning up voice channel {voice_channel_id}: {e}")
+    
+    async def _cleanup_text_channel(self, text_channel_id: int):
+        """Clean up text channel after meeting ends/cancels."""
+        try:
+            # Add delay before cleanup
+            await asyncio.sleep(self.config.meetings.voice_channel_delete_delay)
+            
+            channel = self.bot.get_channel(text_channel_id)
+            if channel and isinstance(channel, discord.TextChannel):
+                await channel.delete(reason="Meeting ended/cancelled")
+                self.logger.info(f"Deleted text channel {text_channel_id}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error cleaning up text channel {text_channel_id}: {e}")
 
 
 class MeetingManagementView(discord.ui.View):

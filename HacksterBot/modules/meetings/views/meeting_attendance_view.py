@@ -4,6 +4,7 @@ Meeting attendance view for users to respond to meeting invitations.
 
 import discord
 from core.models import Meeting
+from ..utils.timezone_utils import format_datetime_gmt8
 
 
 class MeetingAttendanceView(discord.ui.View):
@@ -25,7 +26,10 @@ class MeetingAttendanceView(discord.ui.View):
         """Mark user as not attending the meeting.""" 
         # Update custom_id with meeting_id
         button.custom_id = f"meeting_decline_{self.meeting_id}"
-        await self._update_attendance(interaction, 'not_attending')
+        
+        # Show modal to collect alternative times
+        modal = AvailableTimesModal(self.meeting_id)
+        await interaction.response.send_modal(modal)
     
     @discord.ui.button(label="會議控制", style=discord.ButtonStyle.gray, custom_id="meeting_control")
     async def show_control_panel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -60,7 +64,7 @@ class MeetingAttendanceView(discord.ui.View):
             
             embed.add_field(
                 name="⏰ 會議時間",
-                value=f"**{meeting.scheduled_time.strftime('%Y/%m/%d %H:%M')}**",
+                value=f"**{format_datetime_gmt8(meeting.scheduled_time)}**",
                 inline=False
             )
             
@@ -112,7 +116,7 @@ class MeetingAttendanceView(discord.ui.View):
             # Add meeting info
             embed.add_field(
                 name="⏰ 時間",
-                value=f"**{meeting.scheduled_time.strftime('%Y/%m/%d %H:%M')}**",
+                value=f"**{format_datetime_gmt8(meeting.scheduled_time)}**",
                 inline=True
             )
             
@@ -209,4 +213,72 @@ class MeetingAttendanceView(discord.ui.View):
             'attending': discord.Color.green(),
             'not_attending': discord.Color.red()
         }
-        return colors.get(status, discord.Color.blue()) 
+        return colors.get(status, discord.Color.blue())
+
+
+class AvailableTimesModal(discord.ui.Modal):
+    """Modal for collecting user's alternative available times when declining."""
+    
+    def __init__(self, meeting_id: str):
+        super().__init__(title="提供其他有空時間")
+        self.meeting_id = meeting_id
+        
+        self.available_times_input = discord.ui.TextInput(
+            label="您其他有空的時間",
+            placeholder="請詳細描述您有空的時間，例如：\n• 週一到週三晚上7-9點\n• 週六下午任何時間\n• 下週二上午10點後",
+            style=discord.TextStyle.long,
+            max_length=1000,
+            required=True
+        )
+        self.add_item(self.available_times_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        """Process the available times and mark as not attending."""
+        try:
+            meeting = Meeting.objects(id=self.meeting_id).first()
+            if not meeting:
+                await interaction.response.send_message("會議不存在", ephemeral=True)
+                return
+            
+            # Update attendance with available times
+            meeting.add_attendee(
+                interaction.user.id,
+                interaction.user.display_name,
+                'not_attending',
+                self.available_times_input.value.strip()
+            )
+            meeting.save()
+            
+            # Create response embed
+            embed = discord.Embed(
+                title="❌ 已標記為無法參加",
+                description=f"您已回應會議：**{meeting.title}**\n\n您的其他有空時間已記錄，會議發起人修改時間時會參考這些資訊。",
+                color=discord.Color.red()
+            )
+            
+            embed.add_field(
+                name="⏰ 會議時間",
+                value=f"**{format_datetime_gmt8(meeting.scheduled_time)}**",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📝 您提供的有空時間",
+                value=f"```\n{self.available_times_input.value.strip()}\n```",
+                inline=False
+            )
+            
+            # Update the original message with new counts
+            try:
+                from .meeting_attendance_view import MeetingAttendanceView
+                view = MeetingAttendanceView(str(meeting.id))
+                await view._update_announcement_embed(interaction, meeting)
+            except:
+                pass  # Don't fail if we can't update the announcement
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            await interaction.response.send_message(
+                "❌ 更新出席狀態時發生錯誤。", ephemeral=True
+            ) 

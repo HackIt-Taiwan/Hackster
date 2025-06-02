@@ -26,6 +26,13 @@ class MeetingConfirmationView(discord.ui.View):
                 self.meeting_data, interaction
             )
             
+            # Schedule reminders for the meeting
+            if hasattr(self.scheduler.bot, 'modules') and 'meetings' in self.scheduler.bot.modules:
+                meetings_module = self.scheduler.bot.modules['meetings']
+                if meetings_module.reminder_service:
+                    await meetings_module.reminder_service.schedule_meeting_reminders(meeting)
+                    self.scheduler.logger.info(f"Reminders scheduled for meeting {meeting.id}")
+            
             # Announce the meeting
             announcement_msg = await self.scheduler.announce_meeting(
                 meeting, interaction

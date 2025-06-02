@@ -6,6 +6,7 @@ import discord
 from datetime import datetime, timedelta
 from core.models import Meeting
 from typing import Optional
+from ..utils.timezone_utils import format_datetime_gmt8
 
 
 class MeetingControlView(discord.ui.View):
@@ -40,8 +41,28 @@ class MeetingControlView(discord.ui.View):
         # Update custom_id with meeting_id
         button.custom_id = f"reschedule_{self.meeting_id}"
         
-        modal = RescheduleMeetingModal(self.meeting_id)
-        await interaction.response.send_modal(modal)
+        try:
+            meeting = Meeting.objects(id=self.meeting_id).first()
+            if not meeting:
+                await interaction.response.send_message("會議不存在", ephemeral=True)
+                return
+            
+            # Check if there are attendees who can't attend with available times
+            unavailable_with_times = []
+            for attendee in meeting.attendees:
+                if attendee.status == 'not_attending' and attendee.available_times:
+                    unavailable_with_times.append(attendee)
+            
+            # If there are unavailable attendees with alternative times, show AI recommendations
+            if unavailable_with_times:
+                await self._show_time_recommendations(interaction, meeting, unavailable_with_times)
+            else:
+                # No unavailable attendees or no alternative times provided, show normal modal
+                modal = RescheduleMeetingModal(self.meeting_id)
+                await interaction.response.send_modal(modal)
+                
+        except Exception as e:
+            await interaction.response.send_message("系統錯誤，請稍後再試", ephemeral=True)
     
     @discord.ui.button(label="取消會議", style=discord.ButtonStyle.danger, custom_id="cancel_meeting")
     async def cancel_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -55,6 +76,100 @@ class MeetingControlView(discord.ui.View):
             color=0xFF3B30
         )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    
+    async def _show_time_recommendations(self, interaction: discord.Interaction, meeting, unavailable_attendees):
+        """Show AI-recommended times based on unavailable attendees' availability."""
+        # Send processing message
+        processing_embed = discord.Embed(
+            title="🤖 AI正在分析最佳時間...",
+            description="正在根據無法出席用戶的有空時間推薦最合適的替代時間",
+            color=0x8E8E93
+        )
+        await interaction.response.send_message(embed=processing_embed, ephemeral=True)
+        
+        try:
+            # Get the meetings module to access the time advisor
+            meetings_module = interaction.client.modules.get('meetings')
+            if not meetings_module:
+                await interaction.edit_original_response(
+                    embed=discord.Embed(title="❌ 系統錯誤", description="找不到會議模組", color=0xFF3B30)
+                )
+                return
+            
+            # Initialize time advisor if needed
+            if not hasattr(meetings_module, 'time_advisor'):
+                from ..agents.meeting_time_advisor import MeetingTimeAdvisor
+                meetings_module.time_advisor = MeetingTimeAdvisor(interaction.client, meetings_module.config)
+                await meetings_module.time_advisor.initialize()
+            
+            # Get AI recommendations
+            from datetime import datetime
+            current_time = datetime.now()
+            recommendations = await meetings_module.time_advisor.recommend_times(meeting, current_time)
+            
+            if not recommendations:
+                # Fall back to manual input
+                await interaction.edit_original_response(
+                    embed=discord.Embed(
+                        title="⚠️ 無法生成推薦時間",
+                        description="AI無法分析最佳時間，請手動輸入新時間",
+                        color=0xFF9500
+                    )
+                )
+                
+                # Show manual input modal after a delay
+                import asyncio
+                await asyncio.sleep(2)
+                modal = RescheduleMeetingModal(self.meeting_id)
+                await interaction.followup.send_modal(modal)
+                return
+            
+            # Show unavailable attendees' times and AI recommendations
+            embed = discord.Embed(
+                title="📋 無法出席用戶的其他有空時間",
+                description="🤖 AI正在分析以下時間安排，為您推薦最佳替代方案",
+                color=0x007AFF
+            )
+            
+            # Add unavailable attendees' available times in vertical layout
+            for i, attendee in enumerate(unavailable_attendees[:5], 1):  # Show up to 5 users
+                username = attendee.username or f"用戶{attendee.user_id}"
+                available_times = attendee.available_times[:200] + ('...' if len(attendee.available_times) > 200 else '')
+                
+                embed.add_field(
+                    name=f"🙋‍♂️ {username}",
+                    value=f"```\n{available_times}\n```",
+                    inline=False
+                )
+            
+            if len(unavailable_attendees) > 5:
+                embed.add_field(
+                    name="📊 統計",
+                    value=f"共有 **{len(unavailable_attendees)}** 位用戶提供了其他有空時間",
+                    inline=False
+                )
+            
+            # Add AI analysis
+            if recommendations.get('analysis'):
+                embed.add_field(
+                    name="🤖 AI分析",
+                    value=recommendations['analysis'],
+                    inline=False
+                )
+            
+            # Create view with recommendations
+            view = TimeRecommendationView(self.meeting_id, recommendations)
+            
+            await interaction.edit_original_response(embed=embed, view=view)
+            
+        except Exception as e:
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="❌ 分析失敗",
+                    description="無法分析最佳時間，請手動輸入新時間",
+                    color=0xFF3B30
+                )
+            )
 
 
 class AddAttendeesModal(discord.ui.Modal):
@@ -436,4 +551,197 @@ class CancelConfirmationView(discord.ui.View):
         try:
             await interaction.delete_original_response()
         except:
-            pass 
+            pass
+
+
+class TimeRecommendationView(discord.ui.View):
+    """View for showing AI-recommended meeting times."""
+    
+    def __init__(self, meeting_id: str, recommendations: dict):
+        super().__init__(timeout=300)  # 5 minutes timeout
+        self.meeting_id = meeting_id
+        self.recommendations = recommendations
+        
+        # Add select menu for recommendations
+        if recommendations.get('recommendations'):
+            self.add_item(TimeRecommendationSelect(meeting_id, recommendations['recommendations']))
+        
+        # Add "Other Time" button
+        self.add_item(CustomTimeButton(meeting_id))
+    
+    async def on_timeout(self):
+        """Disable all items when view times out."""
+        for item in self.children:
+            item.disabled = True
+
+
+class TimeRecommendationSelect(discord.ui.Select):
+    """Select menu for AI-recommended meeting times."""
+    
+    def __init__(self, meeting_id: str, recommendations: list):
+        self.meeting_id = meeting_id
+        
+        # Create options from recommendations
+        options = []
+        weekdays = ['週一', '週二', '週三', '週四', '週五', '週六', '週日']
+        
+        for i, rec in enumerate(recommendations, 1):
+            try:
+                dt = datetime.fromisoformat(rec['datetime'])
+                # Convert to GMT+8 for display
+                gmt8_dt = format_datetime_gmt8(dt, "%Y/%m/%d %H:%M")
+                weekday = weekdays[dt.weekday()]
+                confidence = rec.get('confidence', 0)
+                reason = rec['reason'][:10]  # Limit to 10 characters as requested
+                
+                options.append(discord.SelectOption(
+                    label=f"{gmt8_dt} ({weekday})",
+                    value=rec['datetime'],
+                    description=reason,
+                    emoji="⭐"
+                ))
+            except:
+                continue
+        
+        super().__init__(
+            placeholder="選擇AI推薦的會議時間...",
+            options=options,
+            custom_id=f"time_recommendation_select_{meeting_id}"
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        """Handle time selection."""
+        try:
+            selected_time = self.values[0]
+            
+            # Process the time update
+            await self._update_meeting_time(interaction, selected_time)
+            
+        except Exception as e:
+            await interaction.response.send_message("時間更新失敗，請稍後再試", ephemeral=True)
+    
+    async def _update_meeting_time(self, interaction: discord.Interaction, new_time_str: str):
+        """Update the meeting time and notify attendees."""
+        try:
+            meeting = Meeting.objects(id=self.meeting_id).first()
+            if not meeting:
+                await interaction.response.send_message("會議不存在", ephemeral=True)
+                return
+            
+            # Parse new time
+            from datetime import datetime
+            import pytz
+            new_time = datetime.fromisoformat(new_time_str)
+            
+            # Ensure timezone aware
+            meetings_module = interaction.client.modules.get('meetings')
+            if meetings_module:
+                tz = pytz.timezone(meetings_module.config.meetings.default_timezone)
+                if new_time.tzinfo is None:
+                    new_time = tz.localize(new_time)
+            
+            # Save old time and update
+            old_time = meeting.scheduled_time
+            meeting.scheduled_time = new_time
+            meeting.save()
+            
+            # Create success response
+            embed = discord.Embed(
+                title="✅ 會議時間已更新",
+                description="根據AI推薦，會議時間已成功更新",
+                color=0x34C759
+            )
+            embed.add_field(
+                name="原時間",
+                value=f"**{old_time.strftime('%Y/%m/%d %H:%M')}**",
+                inline=True
+            )
+            embed.add_field(
+                name="新時間",
+                value=f"**{new_time.strftime('%Y/%m/%d %H:%M')}**",
+                inline=True
+            )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+            # Clean up the recommendation message
+            try:
+                await interaction.delete_original_response()
+            except:
+                pass
+            
+            # Notify attendees
+            await self._notify_reschedule(interaction, meeting, old_time, new_time)
+            
+        except Exception as e:
+            await interaction.response.send_message("時間更新失敗，請稍後再試", ephemeral=True)
+    
+    async def _notify_reschedule(self, interaction: discord.Interaction, meeting: Meeting, old_time: datetime, new_time: datetime):
+        """Notify attendees about the reschedule (same as in RescheduleMeetingModal)."""
+        try:
+            # Update announcement message
+            if meeting.announcement_message_id and meeting.announcement_channel_id:
+                channel = interaction.guild.get_channel(meeting.announcement_channel_id)
+                if channel:
+                    try:
+                        message = await channel.fetch_message(meeting.announcement_message_id)
+                        if message and message.embeds:
+                            embed = message.embeds[0]
+                            
+                            # Update time field
+                            for i, field in enumerate(embed.fields):
+                                if "時間" in field.name:
+                                    embed.set_field_at(
+                                        i, 
+                                        name=field.name,
+                                        value=f"**{new_time.strftime('%Y/%m/%d %H:%M')}**",
+                                        inline=field.inline
+                                    )
+                                    break
+                            
+                            await message.edit(embed=embed)
+                    except Exception:
+                        pass
+            
+            # Send notification message
+            notify_embed = discord.Embed(
+                title="⏰ 會議時間已更改",
+                description=f"**{meeting.title}** 的時間已根據AI推薦更改",
+                color=0xFF9500
+            )
+            notify_embed.add_field(
+                name="原時間",
+                value=f"**{old_time.strftime('%Y/%m/%d %H:%M')}**",
+                inline=True
+            )
+            notify_embed.add_field(
+                name="新時間",
+                value=f"**{new_time.strftime('%Y/%m/%d %H:%M')}**",
+                inline=True
+            )
+            
+            if meeting.announcement_channel_id:
+                channel = interaction.guild.get_channel(meeting.announcement_channel_id)
+                if channel:
+                    await channel.send(embed=notify_embed)
+            
+        except Exception:
+            pass
+
+
+class CustomTimeButton(discord.ui.Button):
+    """Button for manual time input."""
+    
+    def __init__(self, meeting_id: str):
+        super().__init__(
+            label="其他時間",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"custom_time_{meeting_id}",
+            emoji="⏰"
+        )
+        self.meeting_id = meeting_id
+    
+    async def callback(self, interaction: discord.Interaction):
+        """Show manual time input modal."""
+        modal = RescheduleMeetingModal(self.meeting_id)
+        await interaction.response.send_modal(modal) 

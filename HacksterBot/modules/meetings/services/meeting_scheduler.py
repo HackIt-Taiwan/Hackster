@@ -11,6 +11,7 @@ from discord.ext import commands
 from core.models import Meeting, MeetingAttendee
 from ..views.meeting_confirmation_view import MeetingConfirmationView
 from ..views.meeting_attendance_view import MeetingAttendanceView
+from ..utils.timezone_utils import format_datetime_gmt8
 
 
 class MeetingScheduler:
@@ -51,7 +52,7 @@ class MeetingScheduler:
             description: Meeting description (optional)
             max_attendees: Maximum number of attendees (optional)
         """
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         
         try:
             # Parse time expression
@@ -97,7 +98,7 @@ class MeetingScheduler:
             view = MeetingConfirmationView(self, meeting_data)
             embed = self._create_confirmation_embed(meeting_data)
             
-            await interaction.followup.send(embed=embed, view=view)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
             
         except Exception as e:
             self.logger.error(f"Meeting request handling failed: {e}")
@@ -197,7 +198,7 @@ class MeetingScheduler:
         # Time information - use parsed time instead of interpreted_as to avoid encoding issues
         try:
             parsed_time = datetime.fromisoformat(meeting_data['parsed_time'])
-            time_text = f"**{parsed_time.strftime('%Y/%m/%d %H:%M')}**"
+            time_text = f"**{format_datetime_gmt8(parsed_time)}**"
         except:
             # Fallback to interpreted_as if parsing fails
             time_text = f"**{meeting_data.get('interpreted_as', '時間解析錯誤')}**"
@@ -369,7 +370,7 @@ class MeetingScheduler:
             
             embed.add_field(
                 name="🕐 時間",
-                value=f"**{meeting.scheduled_time.strftime('%Y/%m/%d %H:%M')}**",
+                value=f"**{format_datetime_gmt8(meeting.scheduled_time)}**",
                 inline=True
             )
             
@@ -455,6 +456,6 @@ class MeetingScheduler:
         """Format datetime string for display."""
         try:
             dt = datetime.fromisoformat(datetime_str)
-            return dt.strftime('%Y/%m/%d %H:%M')
+            return format_datetime_gmt8(dt)
         except:
             return datetime_str 

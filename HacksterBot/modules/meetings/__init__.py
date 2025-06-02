@@ -47,12 +47,20 @@ class MeetingsModule(ModuleBase):
             self.meeting_manager = MeetingManager(self.bot, self.config)
             self.reminder_service = ReminderService(self.bot, self.config)
             
+            # Initialize time advisor for AI recommendations
+            from .agents.meeting_time_advisor import MeetingTimeAdvisor
+            self.time_advisor = MeetingTimeAdvisor(self.bot, self.config)
+            await self.time_advisor.initialize()
+            
             # Add aliases for backward compatibility
             self.scheduler = self.meeting_scheduler
             self.manager = self.meeting_manager
             
             # Start reminder task
             await self.reminder_service.start()
+            
+            # Register event listeners
+            self.bot.add_listener(self._on_voice_state_update, 'on_voice_state_update')
             
             # Register commands
             await self._register_commands()
