@@ -6,6 +6,11 @@ about whether it should actually be treated as a violation.
 
 from typing import Dict, List, Optional, Any
 from pydantic_ai import Agent
+import asyncio
+import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 MODERATION_REVIEW_SYSTEM_PROMPT = """你是一個專門複查內容審核結果的AI助手。你的任務是判斷被AI內容審核系統標記的內容是否真的違反了社群規範，還是為誤判。你應該盡可能寬鬆地解釋內容，將更多案例判定為誤判而非違規。
 
@@ -139,17 +144,17 @@ async def review_flagged_content(
     print(f"[審核] 開始評估內容是否為誤判，被標記類型: {', '.join(violation_categories)}")
     print(f"[審核] 內容片段: {content[:50]}{'...' if len(content) > 50 else ''}")
     
-    # 嘗試使用主要代理進行評估
-    primary_result = await try_review_with_agent(agent, prompt, "主要")
+    # 嘗試使用主要代理進行評估，採用強健重試機制
+    primary_result = await try_review_with_robust_retry(agent, prompt, "主要")
     
     # 如果主要代理返回有效結果，直接使用它
     if primary_result and primary_result.get("response_text"):
         return process_response(primary_result["response_text"], violation_categories, high_severity_count)
     
-    # 如果主要代理失敗且有備用代理，嘗試使用備用代理
+    # 如果主要代理失敗且有備用代理，嘗試使用備用代理進行強健重試
     if backup_agent:
         print(f"[審核] 主要AI服務未返回有效結果，嘗試使用備用AI服務")
-        backup_result = await try_review_with_agent(backup_agent, prompt, "備用")
+        backup_result = await try_review_with_robust_retry(backup_agent, prompt, "備用")
         
         # 如果備用代理返回有效結果，使用它
         if backup_result and backup_result.get("response_text"):
@@ -166,70 +171,142 @@ async def review_flagged_content(
         "rules_referenced": ["2.1-2.8"]  # 默認引用所有禁止行為規則
     }
 
-async def try_review_with_agent(agent: Agent, prompt: str, agent_type: str = "主要") -> Optional[Dict[str, Any]]:
-    """嘗試使用特定代理進行評估"""
-    try:
-        print(f"[審核] 使用{agent_type}AI服務評估內容")
-        run_result = await agent.run(prompt)
+async def try_review_with_robust_retry(agent: Agent, prompt: str, agent_type: str = "主要") -> Optional[Dict[str, Any]]:
+    """
+    使用強健的重試機制嘗試AI評估，專門處理503服務過載錯誤
+    
+    重試策略：
+    - 503錯誤：指數退避重試，最多重試10次
+    - 其他錯誤：最多重試3次
+    - 最大總重試時間：5分鐘
+    """
+    max_retries_503 = 10  # 503錯誤最大重試次數
+    max_retries_other = 3  # 其他錯誤最大重試次數
+    max_total_time = 300  # 最大總重試時間（5分鐘）
+    
+    start_time = time.time()
+    retry_count_503 = 0
+    retry_count_other = 0
+    
+    while True:
+        current_time = time.time()
+        elapsed_time = current_time - start_time
         
-        # 處理響應
-        response_text = ""
+        # 檢查是否超過最大重試時間
+        if elapsed_time >= max_total_time:
+            print(f"[審核] {agent_type}AI服務：重試超時（{elapsed_time:.1f}秒），停止重試")
+            break
         
-        # 首先嘗試訪問 data 屬性，這是 pydantic_ai 返回結果的常見屬性
-        if hasattr(run_result, 'data'):
-            response_text = run_result.data
-            print(f"[審核] {agent_type}AI服務：使用 data 屬性獲取响應")
-        # 備用選項
-        elif hasattr(run_result, 'response'):
-            response_text = run_result.response
-            print(f"[審核] {agent_type}AI服務：使用 response 屬性獲取响應")
-        elif hasattr(run_result, 'content'):
-            response_text = run_result.content
-            print(f"[審核] {agent_type}AI服務：使用 content 屬性獲取响應")
-        elif hasattr(run_result, 'text'):
-            response_text = run_result.text
-            print(f"[審核] {agent_type}AI服務：使用 text 屬性獲取响應")
-        elif hasattr(run_result, 'message'):
-            response_text = run_result.message
-            print(f"[審核] {agent_type}AI服務：使用 message 屬性獲取响應")
-        elif isinstance(run_result, str):
-            response_text = run_result
-            print(f"[審核] {agent_type}AI服務：响應是直接的字符串")
-        else:
-            # 最後嘗試將結果轉換為字符串
-            response_text = str(run_result)
-            print(f"[審核] {agent_type}AI服務：无法直接獲取响應，已轉換為字符串")
-        
-        # 對響應文本進行處理
-        if isinstance(response_text, str):
-            original_text = response_text
-            response_text = response_text.strip()
+        try:
+            print(f"[審核] 使用{agent_type}AI服務評估內容（嘗試 {retry_count_503 + retry_count_other + 1}）")
+            run_result = await agent.run(prompt)
             
-            # 移除可能包裹的引號
-            if response_text.startswith('"') and response_text.endswith('"'):
-                response_text = response_text[1:-1]
-                print(f"[審核] {agent_type}AI服務：移除了雙引號")
-            if response_text.startswith("'") and response_text.endswith("'"):
-                response_text = response_text[1:-1]
-                print(f"[審核] {agent_type}AI服務：移除了單引號")
-            if response_text.startswith("「") and response_text.endswith("」"):
-                response_text = response_text[1:-1]
-                print(f"[審核] {agent_type}AI服務：移除了全形引號")
+            # 處理響應
+            response_text = ""
             
-            # 檢查是否為空響應
-            if not response_text or response_text.strip() == "":
-                print(f"[審核] {agent_type}AI服務：收到空響應")
-                return {"response_text": ""}
+            # 首先嘗試訪問 data 屬性，這是 pydantic_ai 返回結果的常見屬性
+            if hasattr(run_result, 'data'):
+                response_text = run_result.data
+                print(f"[審核] {agent_type}AI服務：使用 data 屬性獲取响應")
+            # 備用選項
+            elif hasattr(run_result, 'response'):
+                response_text = run_result.response
+                print(f"[審核] {agent_type}AI服務：使用 response 屬性獲取响應")
+            elif hasattr(run_result, 'content'):
+                response_text = run_result.content
+                print(f"[審核] {agent_type}AI服務：使用 content 屬性獲取响應")
+            elif hasattr(run_result, 'text'):
+                response_text = run_result.text
+                print(f"[審核] {agent_type}AI服務：使用 text 屬性獲取响應")
+            elif hasattr(run_result, 'message'):
+                response_text = run_result.message
+                print(f"[審核] {agent_type}AI服務：使用 message 屬性獲取响應")
+            elif isinstance(run_result, str):
+                response_text = run_result
+                print(f"[審核] {agent_type}AI服務：响應是直接的字符串")
+            else:
+                # 最後嘗試將結果轉換為字符串
+                response_text = str(run_result)
+                print(f"[審核] {agent_type}AI服務：无法直接獲取响應，已轉換為字符串")
+            
+            # 對響應文本進行處理
+            if isinstance(response_text, str):
+                original_text = response_text
+                response_text = response_text.strip()
                 
-            print(f"[審核] {agent_type}AI服務：响應文本: {response_text[:100]}")
-            return {"response_text": response_text}
-        else:
-            print(f"[審核] {agent_type}AI服務：响應不是字符串類型: {type(response_text)}")
-            return {"response_text": ""}
+                # 移除可能包裹的引號
+                if response_text.startswith('"') and response_text.endswith('"'):
+                    response_text = response_text[1:-1]
+                    print(f"[審核] {agent_type}AI服務：移除了雙引號")
+                if response_text.startswith("'") and response_text.endswith("'"):
+                    response_text = response_text[1:-1]
+                    print(f"[審核] {agent_type}AI服務：移除了單引號")
+                if response_text.startswith("「") and response_text.endswith("」"):
+                    response_text = response_text[1:-1]
+                    print(f"[審核] {agent_type}AI服務：移除了全形引號")
+                
+                # 檢查是否為空響應
+                if not response_text or response_text.strip() == "":
+                    print(f"[審核] {agent_type}AI服務：收到空響應，嘗試重試")
+                    retry_count_other += 1
+                    if retry_count_other >= max_retries_other:
+                        print(f"[審核] {agent_type}AI服務：空響應重試次數已達上限")
+                        break
+                    await asyncio.sleep(1)  # 短暫等待後重試
+                    continue
+                    
+                print(f"[審核] {agent_type}AI服務成功：響應文本: {response_text[:100]}")
+                return {"response_text": response_text}
+            else:
+                print(f"[審核] {agent_type}AI服務：響應不是字符串類型: {type(response_text)}")
+                retry_count_other += 1
+                if retry_count_other >= max_retries_other:
+                    print(f"[審核] {agent_type}AI服務：非字符串響應重試次數已達上限")
+                    break
+                await asyncio.sleep(1)
+                continue
+                
+        except Exception as e:
+            error_message = str(e).lower()
+            is_503_error = False
             
-    except Exception as e:
-        print(f"[審核] {agent_type}AI服務評估失敗: {e}")
-        return None
+            # 檢查是否為503錯誤（服務過載）
+            if ("503" in error_message or 
+                "overloaded" in error_message or 
+                "service unavailable" in error_message or
+                "unavailable" in error_message):
+                is_503_error = True
+                retry_count_503 += 1
+                
+                if retry_count_503 > max_retries_503:
+                    print(f"[審核] {agent_type}AI服務：503錯誤重試次數已達上限（{max_retries_503}次）")
+                    break
+                
+                # 503錯誤使用指數退避
+                delay = min(2 ** (retry_count_503 - 1), 60)  # 最大延遲60秒
+                print(f"[審核] {agent_type}AI服務503錯誤（第{retry_count_503}次），{delay}秒後重試: {e}")
+                await asyncio.sleep(delay)
+            else:
+                # 其他錯誤
+                retry_count_other += 1
+                
+                if retry_count_other > max_retries_other:
+                    print(f"[審核] {agent_type}AI服務：其他錯誤重試次數已達上限（{max_retries_other}次）")
+                    break
+                
+                # 其他錯誤使用固定延遲
+                delay = 2
+                print(f"[審核] {agent_type}AI服務其他錯誤（第{retry_count_other}次），{delay}秒後重試: {e}")
+                await asyncio.sleep(delay)
+    
+    total_attempts = retry_count_503 + retry_count_other + 1
+    elapsed_time = time.time() - start_time
+    print(f"[審核] {agent_type}AI服務：重試結束，總嘗試{total_attempts}次，耗時{elapsed_time:.1f}秒")
+    return None
+
+async def try_review_with_agent(agent: Agent, prompt: str, agent_type: str = "主要") -> Optional[Dict[str, Any]]:
+    """舊的評估函數，保持向後兼容"""
+    return await try_review_with_robust_retry(agent, prompt, agent_type)
 
 def process_response(response_text: str, violation_categories: List[str], high_severity_count: bool) -> Dict[str, Any]:
     """處理AI回應並判斷是否為違規"""

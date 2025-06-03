@@ -6,6 +6,8 @@ import logging
 import base64
 import aiohttp
 import io
+import asyncio
+import time
 from typing import Dict, List, Union, Tuple, Optional, Any
 from openai import AsyncOpenAI
 
@@ -47,6 +49,101 @@ class ContentModerator:
             api_key=os.getenv("OPENAI_API_KEY")
         )
         
+    async def _api_call_with_retry(self, api_call, operation_name: str):
+        """
+        執行API調用並使用強健的重試機制
+        
+        重試策略：
+        - 503錯誤（服務過載）：指數退避重試，最多重試12次
+        - 429錯誤（請求限制）：指數退避重試，最多重試8次
+        - 其他錯誤：最多重試3次
+        - 最大總重試時間：8分鐘
+        """
+        max_retries_503 = 12  # 503錯誤最大重試次數
+        max_retries_429 = 8   # 429錯誤最大重試次數
+        max_retries_other = 3  # 其他錯誤最大重試次數
+        max_total_time = 480   # 最大總重試時間（8分鐘）
+        
+        start_time = time.time()
+        retry_count_503 = 0
+        retry_count_429 = 0
+        retry_count_other = 0
+        
+        while True:
+            current_time = time.time()
+            elapsed_time = current_time - start_time
+            
+            # 檢查是否超過最大重試時間
+            if elapsed_time >= max_total_time:
+                total_attempts = retry_count_503 + retry_count_429 + retry_count_other + 1
+                logger.warning(f"[審核] {operation_name}：重試超時（{elapsed_time:.1f}秒），停止重試，總嘗試{total_attempts}次")
+                raise Exception(f"{operation_name} failed after {total_attempts} attempts over {elapsed_time:.1f} seconds")
+            
+            try:
+                total_attempts = retry_count_503 + retry_count_429 + retry_count_other + 1
+                logger.info(f"[審核] {operation_name}：嘗試第{total_attempts}次")
+                
+                # 執行API調用
+                result = await api_call()
+                
+                # 成功時記錄統計信息
+                if total_attempts > 1:
+                    logger.info(f"[審核] {operation_name}成功：總嘗試{total_attempts}次，耗時{elapsed_time:.1f}秒")
+                else:
+                    logger.debug(f"[審核] {operation_name}成功：首次嘗試")
+                
+                return result
+                
+            except Exception as e:
+                error_message = str(e).lower()
+                is_503_error = False
+                is_429_error = False
+                
+                # 檢查錯誤類型
+                if ("503" in error_message or 
+                    "overloaded" in error_message or 
+                    "service unavailable" in error_message or
+                    "unavailable" in error_message):
+                    is_503_error = True
+                    retry_count_503 += 1
+                    
+                    if retry_count_503 > max_retries_503:
+                        logger.error(f"[審核] {operation_name}：503錯誤重試次數已達上限（{max_retries_503}次）")
+                        raise Exception(f"{operation_name} failed: Service overloaded after {max_retries_503} retries")
+                    
+                    # 503錯誤使用指數退避，但最大延遲120秒
+                    delay = min(2 ** (retry_count_503 - 1), 120)
+                    logger.warning(f"[審核] {operation_name}遇到503錯誤（第{retry_count_503}次），{delay}秒後重試: {e}")
+                    await asyncio.sleep(delay)
+                    
+                elif ("429" in error_message or 
+                      "rate limit" in error_message or
+                      "too many requests" in error_message):
+                    is_429_error = True
+                    retry_count_429 += 1
+                    
+                    if retry_count_429 > max_retries_429:
+                        logger.error(f"[審核] {operation_name}：429錯誤重試次數已達上限（{max_retries_429}次）")
+                        raise Exception(f"{operation_name} failed: Rate limit exceeded after {max_retries_429} retries")
+                    
+                    # 429錯誤使用指數退避，但最大延遲60秒
+                    delay = min(2 ** (retry_count_429 - 1), 60)
+                    logger.warning(f"[審核] {operation_name}遇到429錯誤（第{retry_count_429}次），{delay}秒後重試: {e}")
+                    await asyncio.sleep(delay)
+                    
+                else:
+                    # 其他錯誤
+                    retry_count_other += 1
+                    
+                    if retry_count_other > max_retries_other:
+                        logger.error(f"[審核] {operation_name}：其他錯誤重試次數已達上限（{max_retries_other}次）")
+                        raise Exception(f"{operation_name} failed: {str(e)} after {max_retries_other} retries")
+                    
+                    # 其他錯誤使用固定延遲
+                    delay = 3
+                    logger.warning(f"[審核] {operation_name}遇到其他錯誤（第{retry_count_other}次），{delay}秒後重試: {e}")
+                    await asyncio.sleep(delay)
+        
     async def moderate_text(self, text: str) -> Tuple[bool, Dict]:
         """
         Moderate text content using OpenAI's moderation API.
@@ -58,7 +155,7 @@ class ContentModerator:
             A tuple containing a boolean indicating if the content violates policies,
             and a dictionary with detailed results.
         """
-        try:
+        async def _api_call():
             response = await self.client.moderations.create(
                 input=[{"type": "text", "text": text}],
                 model="omni-moderation-latest"
@@ -81,8 +178,10 @@ class ContentModerator:
                 "flagged": result.flagged
             }
         
+        try:
+            return await self._api_call_with_retry(_api_call, "文字內容審核")
         except Exception as e:
-            logger.error(f"Error moderating text: {str(e)}")
+            logger.error(f"Error moderating text after all retries: {str(e)}")
             # In case of error, return False to prevent false positives
             return False, {"error": str(e)}
     
@@ -97,7 +196,7 @@ class ContentModerator:
             A tuple containing a boolean indicating if the image violates policies,
             and a dictionary with detailed results.
         """
-        try:
+        async def _api_call():
             response = await self.client.moderations.create(
                 input=[{"type": "image_url", "image_url": {"url": image_url}}],
                 model="omni-moderation-latest"
@@ -120,8 +219,10 @@ class ContentModerator:
                 "flagged": result.flagged
             }
         
+        try:
+            return await self._api_call_with_retry(_api_call, "圖片內容審核")
         except Exception as e:
-            logger.error(f"Error moderating image: {str(e)}")
+            logger.error(f"Error moderating image after all retries: {str(e)}")
             # In case of error, return False to prevent false positives
             return False, {"error": str(e)}
     
@@ -137,7 +238,7 @@ class ContentModerator:
             A tuple containing a boolean indicating if the image violates policies,
             and a dictionary with detailed results.
         """
-        try:
+        async def _api_call():
             # Convert image data to base64
             base64_image = base64.b64encode(image_data).decode('utf-8')
             
@@ -166,8 +267,10 @@ class ContentModerator:
                 "flagged": result.flagged
             }
         
+        try:
+            return await self._api_call_with_retry(_api_call, "檔案圖片內容審核")
         except Exception as e:
-            logger.error(f"Error moderating image from file: {str(e)}")
+            logger.error(f"Error moderating image from file after all retries: {str(e)}")
             # In case of error, return False to prevent false positives
             return False, {"error": str(e)}
     

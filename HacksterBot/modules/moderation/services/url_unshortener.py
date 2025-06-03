@@ -144,6 +144,34 @@ class URLUnshortener:
             chrome_options.add_argument("--disable-notifications")
             chrome_options.add_argument("--disable-popup-blocking")
             chrome_options.add_argument("--log-level=3")
+            chrome_options.add_argument("--mute-audio")
+            chrome_options.add_argument("--disable-audio-output")
+            chrome_options.add_argument("--no-audio")
+            chrome_options.add_argument("--disable-media-session")
+            chrome_options.add_argument("--disable-audio-support")
+            chrome_options.add_argument("--disable-sound")
+            chrome_options.add_argument("--disable-audio")
+            chrome_options.add_argument("--disable-media-stream")
+            chrome_options.add_experimental_option("useAutomationExtension", False)
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+            
+            # Disable audio and media completely with preferences
+            prefs = {
+                "profile.default_content_setting_values": {
+                    "media_stream": 2,
+                    "media_stream_mic": 2,
+                    "media_stream_camera": 2,
+                    "audio_capture_allowed": False,
+                    "video_capture_allowed": False,
+                    "media_playback": 2
+                },
+                "profile.content_settings.exceptions.audio_capture": {},
+                "profile.content_settings.exceptions.video_capture": {},
+                "profile.managed_default_content_settings": {
+                    "media_stream": 2
+                }
+            }
+            chrome_options.add_experimental_option("prefs", prefs)
             
             # Set user agent
             chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
