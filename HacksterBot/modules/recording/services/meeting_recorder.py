@@ -11,6 +11,7 @@ import discord
 try:
     from discord.ext import voice_recv
     from discord import opus
+
     VOICE_RECV_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
     VOICE_RECV_AVAILABLE = False
@@ -89,12 +90,12 @@ class RecordingSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else object):
         os.makedirs(folder, exist_ok=True)
 
     def wants_opus(self) -> bool:
-        # Decode Opus frames ourselves to handle errors gracefully
         return True
 
     def write(self, user: discord.User, voice_data) -> None:  # type: ignore[override]
         if not voice_data or not VOICE_RECV_AVAILABLE:
             return
+
 
         opus_frame = getattr(voice_data, "opus", None)
         if not opus_frame:
@@ -116,6 +117,11 @@ class RecordingSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else object):
             self.logger.debug("Opus decode failed for user %s: %s", user.id, e)
             return
 
+
+        pcm = getattr(voice_data, "pcm", None) or getattr(voice_data, "data", None)
+        if not pcm:
+            return
+
         now = time.time()
         recorder = self.recorders.get(user.id)
         if recorder is None:
@@ -132,6 +138,7 @@ class RecordingSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else object):
             recorder.initialize(now)
             self.recorders[user.id] = recorder
         recorder.add_audio(pcm, now)
+
 
     @voice_recv.AudioSink.listener()
     def on_voice_member_disconnect(self, member: discord.Member, ssrc: int | None) -> None:

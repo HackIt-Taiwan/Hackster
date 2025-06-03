@@ -333,7 +333,7 @@ class MeetingScheduler:
             self.logger.error(f"Meeting data: {meeting_data}")
             raise
     
-    async def announce_meeting(self, meeting: Meeting, 
+    async def announce_meeting(self, meeting: Meeting,
                              interaction: discord.Interaction) -> discord.Message:
         """
         Announce the meeting with Apple-style design and dual views.
@@ -439,6 +439,9 @@ class MeetingScheduler:
             
             # Send the announcement
             announcement_msg = await channel.send(embed=embed, view=view)
+
+            # DM invited participants so they can respond
+            await self._dm_invited_participants(meeting, embed, view, announcement_msg.jump_url, interaction.guild)
             
             # Store announcement message info
             meeting.announcement_channel_id = channel.id
@@ -447,10 +450,39 @@ class MeetingScheduler:
             
             self.logger.info(f"Meeting announcement published: {meeting.title}")
             return announcement_msg
-            
+
         except Exception as e:
             self.logger.error(f"Failed to publish meeting announcement: {e}")
             return None
+
+    async def _dm_invited_participants(self, meeting: Meeting, embed: discord.Embed,
+                                        view: discord.ui.View, jump_url: str,
+                                        guild: discord.Guild):
+        """Send meeting invitation DMs to all mentioned participants."""
+        if not guild:
+            return
+
+        dm_embed = embed.copy()
+        dm_embed.add_field(
+            name="📨 回覆邀請",
+            value=f"請點擊 [此連結]({jump_url}) 以回應您的出席狀態。",
+            inline=False,
+        )
+
+        for attendee in meeting.attendees:
+            if attendee.user_id == meeting.organizer_id:
+                continue
+
+            member = guild.get_member(attendee.user_id)
+            if member:
+                try:
+                    await member.send(embed=dm_embed, view=view)
+                except discord.Forbidden:
+                    self.logger.debug(
+                        f"Cannot send DM to user {attendee.user_id} - DMs disabled")
+                except Exception as exc:
+                    self.logger.error(
+                        f"Error sending meeting invite DM to {attendee.user_id}: {exc}")
     
     def _format_datetime(self, datetime_str: str) -> str:
         """Format datetime string for display."""
