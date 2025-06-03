@@ -10,6 +10,8 @@ import discord
 
 try:
     from discord.ext import voice_recv
+    from discord import opus
+
     VOICE_RECV_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
     VOICE_RECV_AVAILABLE = False
@@ -83,18 +85,43 @@ class RecordingSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else object):
         self.channels = 2
         self.sample_width = 2
         self.recorders: Dict[int, UserRecorder] = {}
+        self.decoders: Dict[int, opus.Decoder] = {}
         self.logger = logging.getLogger(__name__)
         os.makedirs(folder, exist_ok=True)
 
     def wants_opus(self) -> bool:
-        return False
+        return True
 
     def write(self, user: discord.User, voice_data) -> None:  # type: ignore[override]
         if not voice_data or not VOICE_RECV_AVAILABLE:
             return
+
+
+        opus_frame = getattr(voice_data, "opus", None)
+        if not opus_frame:
+            return
+
+        decoder = self.decoders.get(user.id)
+        if decoder is None:
+            try:
+                decoder = opus.Decoder()
+            except Exception as e:  # pragma: no cover - decoder init shouldn't fail
+                self.logger.error("Failed to create Opus decoder: %s", e)
+                return
+            self.decoders[user.id] = decoder
+
+        try:
+            pcm = decoder.decode(opus_frame)
+        except opus.OpusError as e:
+            # Ignore decode errors but log at debug level for diagnostics
+            self.logger.debug("Opus decode failed for user %s: %s", user.id, e)
+            return
+
+
         pcm = getattr(voice_data, "pcm", None) or getattr(voice_data, "data", None)
         if not pcm:
             return
+
         now = time.time()
         recorder = self.recorders.get(user.id)
         if recorder is None:
@@ -111,6 +138,12 @@ class RecordingSink(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else object):
             recorder.initialize(now)
             self.recorders[user.id] = recorder
         recorder.add_audio(pcm, now)
+
+
+    @voice_recv.AudioSink.listener()
+    def on_voice_member_disconnect(self, member: discord.Member, ssrc: int | None) -> None:
+        if member:
+            self.mark_user_leave(member.id, time.time())
 
     def mark_user_leave(self, user_id: int, leave_time: float) -> None:
         recorder = self.recorders.get(user_id)
