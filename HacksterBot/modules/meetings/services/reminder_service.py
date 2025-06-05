@@ -76,8 +76,7 @@ class ReminderService:
                 
                 reminder.save()
         
-        # Check for meetings that should start now
-        await self._check_meetings_to_start(now)
+        # Auto-start functionality removed - meetings are reminder-only
     
     async def _send_reminder(self, reminder: MeetingReminder):
         """Send a specific reminder."""
@@ -152,7 +151,7 @@ class ReminderService:
         
         embed.add_field(
             name="💡 提醒",
-            value="請提前準備，會議將自動創建語音頻道並開始錄製。",
+            value="請提前準備會議相關資料。",
             inline=False
         )
         
@@ -197,7 +196,7 @@ class ReminderService:
         
         embed.add_field(
             name="🎯 行動",
-            value="請準備加入會議，語音頻道即將創建。",
+            value="會議即將開始，請準備參與。",
             inline=False
         )
         
@@ -234,36 +233,7 @@ class ReminderService:
         
         self.logger.info(f"Reminder sent to {sent_count} members, {failed_count} failed")
     
-    async def _check_meetings_to_start(self, now: datetime):
-        """Check for meetings that should start now."""
-        try:
-            # Find meetings that should start now (within 1 minute window)
-            start_window = now + timedelta(minutes=1)
-            
-            meetings_to_start = Meeting.objects(
-                scheduled_time__lte=start_window,
-                scheduled_time__gte=now - timedelta(minutes=1),
-                status='scheduled'
-            )
-            
-            for meeting in meetings_to_start:
-                try:
-                    # Get the meeting manager from the bot
-                    if hasattr(self.bot, 'modules') and 'meetings' in self.bot.modules:
-                        meetings_module = self.bot.modules['meetings']
-                        if meetings_module.meeting_manager:
-                            await meetings_module.meeting_manager.start_meeting(str(meeting.id))
-                            self.logger.info(f"Auto-started meeting {meeting.id} at scheduled time")
-                        else:
-                            self.logger.error("Meeting manager not available for auto-start")
-                    else:
-                        self.logger.error("Meetings module not available for auto-start")
-                        
-                except Exception as e:
-                    self.logger.error(f"Failed to auto-start meeting {meeting.id}: {e}")
-                    
-        except Exception as e:
-            self.logger.error(f"Error checking meetings to start: {e}")
+    # Auto-start functionality removed - meetings are reminder-only
     
     async def schedule_meeting_reminders(self, meeting: Meeting):
         """

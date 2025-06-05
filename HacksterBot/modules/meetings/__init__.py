@@ -6,7 +6,6 @@ This module provides meeting scheduling functionality including:
 - Meeting confirmation and invitations
 - Attendance management 
 - Automatic reminders (24h/5min before)
-- Voice channel creation and recording integration
 - Meeting management (reschedule, cancel, modify)
 """
 
@@ -59,8 +58,7 @@ class MeetingsModule(ModuleBase):
             # Start reminder task
             await self.reminder_service.start()
             
-            # Register event listeners
-            self.bot.add_listener(self._on_voice_state_update, 'on_voice_state_update')
+            # Voice state update listener removed - no longer needed for meeting management
             
             # Register commands
             await self._register_commands()
@@ -79,8 +77,7 @@ class MeetingsModule(ModuleBase):
         if self.reminder_service:
             await self.reminder_service.stop()
         
-        # Remove event listeners
-        self.bot.remove_listener(self._on_voice_state_update, 'on_voice_state_update')
+        # No event listeners to remove
             
     async def _register_commands(self):
         """Register slash commands."""
@@ -124,7 +121,7 @@ class MeetingsModule(ModuleBase):
         # Get all active meetings to register their views
         try:
             from core.models import Meeting
-            active_meetings = Meeting.objects(status__in=['scheduled', 'started']).all()
+            active_meetings = Meeting.objects(status='scheduled').all()
             
             for meeting in active_meetings:
                 # Register attendance view for each active meeting
@@ -153,60 +150,4 @@ class MeetingsModule(ModuleBase):
             return await self.meeting_manager.cancel_meeting(meeting_id, user_id)
         return False
     
-    async def start_meeting(self, meeting_id: str):
-        """Start a meeting (create voice channel and begin recording)."""
-        if self.meeting_manager:
-            return await self.meeting_manager.start_meeting(meeting_id)
-        return False
-    
-    async def end_meeting(self, meeting_id: str):
-        """End a meeting (stop recording and cleanup)."""
-        if self.manager:
-            return await self.manager.end_meeting(meeting_id)
-        return False
-    
-    async def _on_voice_state_update(self, member, before, after):
-        """Handle voice state updates to detect empty meeting channels."""
-        try:
-            # Check if someone left a voice channel
-            if before.channel and not after.channel:
-                await self._check_empty_meeting_channel(before.channel)
-            elif before.channel and after.channel and before.channel != after.channel:
-                await self._check_empty_meeting_channel(before.channel)
-                
-        except Exception as e:
-            self.logger.error(f"Error handling voice state update: {e}")
-    
-    async def _check_empty_meeting_channel(self, voice_channel):
-        """Check if a voice channel is empty and end meeting if needed."""
-        try:
-            # Only check voice channels we created for meetings
-            if not voice_channel.name.startswith("🎤"):
-                return
-            
-            # Check if channel is now empty
-            if len(voice_channel.members) > 0:
-                return
-            
-            # Find meeting associated with this channel
-            from core.models import Meeting
-            meeting = Meeting.objects(
-                voice_channel_id=voice_channel.id,
-                status='started'
-            ).first()
-            
-            if not meeting:
-                return
-            
-            # Auto-end meeting after a short delay to avoid premature endings
-            import asyncio
-            await asyncio.sleep(60)  # Wait 1 minute
-            
-            # Re-check if still empty
-            updated_channel = self.bot.get_channel(voice_channel.id)
-            if updated_channel and len(updated_channel.members) == 0:
-                await self.manager.end_meeting(str(meeting.id))
-                self.logger.info(f"Auto-ended empty meeting {meeting.id}")
-                
-        except Exception as e:
-            self.logger.error(f"Error checking empty meeting channel: {e}") 
+    # Voice channel management methods removed - meetings now only handle scheduling and reminders 

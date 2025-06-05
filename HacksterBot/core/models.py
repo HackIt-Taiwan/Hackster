@@ -387,23 +387,16 @@ class Meeting(Document):
     # Channel information
     announcement_message_id = IntField()
     announcement_channel_id = IntField()
-    voice_channel_id = IntField()
     
     # Status and management
     status = StringField(max_length=20, default='scheduled',
-                        choices=['scheduled', 'started', 'ended', 'cancelled', 'rescheduled'])
+                        choices=['scheduled', 'ended', 'cancelled', 'rescheduled'])
     
     # Attendees
     attendees = ListField(EmbeddedDocumentField(MeetingAttendee))
     max_attendees = IntField()
     
-    # Recording information  
-    recording_enabled = BooleanField(default=True)
-    recording_started = BooleanField(default=False)
-    recording_started_at = DateTimeField()
-    recording_stopped_at = DateTimeField()
-    recording_channel_id = IntField()
-    forum_post_id = IntField()
+    # Recording information removed - meetings are reminder-only
     
     # Reminder tracking
     reminder_24h_sent = BooleanField(default=False)
@@ -412,7 +405,6 @@ class Meeting(Document):
     # Timestamps
     created_at = DateTimeField(default=datetime.utcnow)
     updated_at = DateTimeField(default=datetime.utcnow)
-    started_at = DateTimeField()
     ended_at = DateTimeField()
     cancelled_at = DateTimeField()
     
@@ -429,8 +421,7 @@ class Meeting(Document):
             'created_at',
             ('guild_id', 'status'),
             ('scheduled_time', 'status'),
-            'announcement_message_id',
-            'voice_channel_id'
+            'announcement_message_id'
         ]
     }
     

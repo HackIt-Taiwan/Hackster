@@ -149,11 +149,8 @@ class RecordingBot(commands.Bot):
         else:
             # User rejoining after leaving
             info["user_join_time"][member.id] = current_time
-            # Get audio sink from recorder for rejoin tracking
-            recorder = info.get("recorder")
-            if recorder and hasattr(recorder, "audio_sink") and recorder.audio_sink:
-                recorder.audio_sink.mark_user_rejoin(member.id, current_time)
-                self.logger.info(f"User {member.display_name} rejoined, audio sync enabled")
+            # Audio sync is handled automatically by the single-track recording system
+            self.logger.info(f"User {member.display_name} rejoined the meeting")
                 
         # Update recording status
         info["user_recording_status"][member.id] = True
@@ -185,11 +182,8 @@ class RecordingBot(commands.Bot):
             info["user_leave_time"][member.id] = current_time
             info["user_recording_status"][member.id] = False
             
-            # Notify audio sink about user leaving for gap tracking
-            recorder = info.get("recorder")
-            if recorder and hasattr(recorder, "audio_sink") and recorder.audio_sink:
-                recorder.audio_sink.mark_user_leave(member.id, current_time)
-                self.logger.info(f"User {member.display_name} left, audio gap tracking enabled")
+            # Single-track recording automatically handles user leaving
+            self.logger.info(f"User {member.display_name} left the meeting")
             
         # Update forum thread
         thread_id = info.get("forum_thread_id")
