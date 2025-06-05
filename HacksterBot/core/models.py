@@ -535,4 +535,41 @@ class MeetingParseLog(Document):
     }
     
     def __str__(self):
-        return f"MeetingParseLog(user={self.user_id}, success={self.success}, model={self.ai_model_used})" 
+        return f"MeetingParseLog(user={self.user_id}, success={self.success}, model={self.ai_model_used})"
+
+
+class BridgeResponse(EmbeddedDocument):
+    """User response for bridge time sessions."""
+    user_id = IntField(required=True)
+    username = StringField(max_length=200)
+    content = StringField()
+    responded_at = DateTimeField(default=datetime.utcnow)
+
+
+class BridgeSession(Document):
+    """Session for collecting available meeting times from multiple users."""
+    organizer_id = IntField(required=True)
+    guild_id = IntField(required=True)
+    channel_id = IntField(required=True)
+    message_id = IntField(required=True)
+    participant_ids = ListField(IntField())
+    responses = ListField(EmbeddedDocumentField(BridgeResponse))
+    completed = BooleanField(default=False)
+    created_at = DateTimeField(default=datetime.utcnow)
+    completed_at = DateTimeField()
+
+    meta = {
+        'collection': 'bridge_sessions',
+        'indexes': [
+            'guild_id',
+            'channel_id',
+            'message_id',
+            'completed'
+        ]
+    }
+
+    def get_response(self, user_id: int):
+        for resp in self.responses:
+            if resp.user_id == user_id:
+                return resp
+        return None

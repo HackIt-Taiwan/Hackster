@@ -137,6 +137,11 @@ python main.py
 - **配置**：`RECORDING_BOT_TOKENS`
 - **依賴**：多個 Discord Bot Tokens
 
+### 會議橋時間模組 (`modules/bridge_time`)
+- **功能**：收集參與者可用時間並透過 AI 推薦會議時段
+- **配置**：`BRIDGE_TIME_ENABLED`, `BRIDGE_TIME_AI_SERVICE`
+- **依賴**：AI API Keys
+
 ### 邀請模組 (`modules/invites`)
 - **功能**：邀請追蹤統計、每日報告、成長圖表
 - **配置**：`INVITES_ENABLED`, `INVITES_DAILY_REPORTS_ENABLED`
@@ -163,6 +168,7 @@ python main.py
 - 安排會議：`/meet <時間> <參與者> [標題] [描述]`
 - 查看會議：`/meetings`
 - 會議詳情：`/meeting_info <會議ID>`
+- 橋會議時間：`/bridge_time <@參與者...>`
 
 ### 遊戲功能
 - 開始21點：`/blackjack`
