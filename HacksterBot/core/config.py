@@ -231,6 +231,14 @@ class MeetingsConfig:
 
 
 @dataclass
+class BridgeTimeConfig:
+    """Meeting time bridging module configuration."""
+    enabled: bool = field(default_factory=lambda: os.getenv("BRIDGE_TIME_ENABLED", "true").lower() == "true")
+    ai_service: str = field(default_factory=lambda: os.getenv("BRIDGE_TIME_AI_SERVICE", os.getenv("SECONDARY_MODEL_PROVIDER", "gemini")))
+    ai_model: str = field(default_factory=lambda: os.getenv("BRIDGE_TIME_AI_MODEL", os.getenv("SECONDARY_MODEL_NAME", "gemini-2.0-flash")))
+
+
+@dataclass
 class LoggingConfig:
     """Logging configuration."""
     level: str = "INFO"
@@ -254,6 +262,7 @@ class Config:
     invite: InviteConfig = field(default_factory=InviteConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     meetings: MeetingsConfig = field(default_factory=MeetingsConfig)
+    bridge_time: BridgeTimeConfig = field(default_factory=BridgeTimeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     
     # General settings
@@ -314,6 +323,7 @@ def load_config() -> Config:
         invite=InviteConfig(),
         recording=RecordingConfig(),
         meetings=MeetingsConfig(),
+        bridge_time=BridgeTimeConfig(),
         logging=LoggingConfig(),
         
         debug=os.getenv("DEBUG", "false").lower() == "true",
