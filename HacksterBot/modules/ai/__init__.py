@@ -62,6 +62,19 @@ class Module(ModuleBase):
         if isinstance(message.channel, discord.DMChannel):
             return
         
+        # Skip replies to bridge time system messages
+        if message.reference:
+            try:
+                replied_message = await message.channel.fetch_message(message.reference.message_id)
+                # Check if the replied message is from the bot and contains bridge time embed
+                if (replied_message.author == self.bot.user and 
+                    replied_message.embeds and 
+                    any(embed.title == "🕑 會議時間調查" for embed in replied_message.embeds)):
+                    return
+            except (discord.NotFound, discord.HTTPException):
+                # If we can't fetch the replied message, continue normally
+                pass
+        
         # Check if bot is mentioned
         bot_mentioned = self.bot.user in message.mentions
         
