@@ -564,3 +564,26 @@ class BridgeSession(Document):
             if resp.user_id == user_id:
                 return resp
         return None
+
+
+class RegisteredUser(Document):
+    """Model for storing user registration information."""
+
+    user_id = IntField(required=True)
+    guild_id = IntField(required=True)
+    real_name = StringField(required=True, max_length=100)
+    email = StringField(required=True, max_length=200)
+    source = StringField(max_length=200)
+    education_stage = StringField(max_length=50)
+    registered_at = DateTimeField(default=datetime.utcnow)
+
+    meta = {
+        'collection': 'registered_users',
+        'indexes': [
+            ('user_id', 'guild_id'),
+            'email',
+        ]
+    }
+
+    def __str__(self):
+        return f"RegisteredUser(user_id={self.user_id}, email={self.email})"

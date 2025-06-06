@@ -239,6 +239,13 @@ class BridgeTimeConfig:
 
 
 @dataclass
+class UserModuleConfig:
+    """Configuration for the user registration module."""
+    enabled: bool = field(default_factory=lambda: os.getenv("USER_MODULE_ENABLED", "true").lower() == "true")
+    registered_role_id: int = field(default_factory=lambda: int(os.getenv("REGISTERED_ROLE_ID", "0")))
+
+
+@dataclass
 class LoggingConfig:
     """Logging configuration."""
     level: str = "INFO"
@@ -263,6 +270,7 @@ class Config:
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     meetings: MeetingsConfig = field(default_factory=MeetingsConfig)
     bridge_time: BridgeTimeConfig = field(default_factory=BridgeTimeConfig)
+    user: UserModuleConfig = field(default_factory=UserModuleConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     
     # General settings
@@ -324,6 +332,7 @@ def load_config() -> Config:
         recording=RecordingConfig(),
         meetings=MeetingsConfig(),
         bridge_time=BridgeTimeConfig(),
+        user=UserModuleConfig(),
         logging=LoggingConfig(),
         
         debug=os.getenv("DEBUG", "false").lower() == "true",

@@ -157,6 +157,7 @@ class HacksterBot(commands.Bot):
             'meetings': self.config.meetings.enabled,  # Meeting scheduling system
             'recording': self.config.recording.enabled,  # Meeting recording system
             'bridge_time': self.config.bridge_time.enabled,  # Meeting time bridge
+            'users': self.config.user.enabled,
         }
         
         return module_config_map.get(module_name, True)
