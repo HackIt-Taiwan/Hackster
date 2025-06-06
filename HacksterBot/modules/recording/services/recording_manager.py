@@ -116,9 +116,9 @@ class RecordingManager:
                         chosen_bot.meeting_voice_channel_info[vc_id]["recording_task"] = recording_task
                         chosen_bot.meeting_voice_channel_info[vc_id]["recorder"] = recorder
                         
-                        self.logger.info(f"Assigned bot {chosen_bot.user.name} to record voice channel {voice_channel.name}")
+                        self.logger.info(f"🎙️ Assigned bot {chosen_bot.user.name} to record voice channel {voice_channel.name}")
                     except Exception as error:
-                        self.logger.error(f"Failed to assign bot to meeting: {error}")
+                        self.logger.error(f"❌ Failed to assign bot to meeting: {error}")
                         
     def assign_bot_for_meeting(self) -> Optional['RecordingBot']:
         """Try to assign a free bot for a new meeting."""
@@ -163,12 +163,19 @@ class RecordingManager:
         # Find the bot recording this channel
         for bot in self.recording_bots:
             vc_info = bot.meeting_voice_channel_info.get(voice_channel_id)
-            if vc_info and vc_info.get("recording_task") is not None:
-                recording_task = vc_info["recording_task"]
-                if not recording_task.done():
+            if vc_info and vc_info.get("recorder") is not None:
+                recorder = vc_info["recorder"]
+                recording_task = vc_info.get("recording_task")
+                
+                # Stop the recorder
+                await recorder.stop_recording(voice_channel_id)
+                
+                # Cancel the task if it's still running
+                if recording_task and not recording_task.done():
                     recording_task.cancel()
-                    self.logger.info(f"Stopped recording for channel {voice_channel_id}")
-                    return True
                     
-        self.logger.warning(f"No active recording found for channel {voice_channel_id}")
+                self.logger.info(f"🛑 Stopped recording for channel {voice_channel_id}")
+                return True
+                    
+        self.logger.warning(f"⚠️ No active recording found for channel {voice_channel_id}")
         return False 
