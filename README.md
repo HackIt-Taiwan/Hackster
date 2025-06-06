@@ -11,6 +11,7 @@
 - **會議系統**：智慧會議安排與錄製管理
 - **邀請管理**：追蹤和管理伺服器邀請連結
 - **歡迎系統**：自動歡迎新成員
+- **用戶註冊**：表單收集並自動授予身份組
 - **遊戲功能**：內建 21 點等遊戲
 - **URL 安全檢查**：檢測惡意連結
 - **彈性配置**：透過環境變數輕鬆配置
@@ -36,6 +37,7 @@ HacksterBot/
 │   ├── moderation/                # 審核系統
 │   ├── tickets/                   # 票務系統
 │   ├── welcome/                   # 歡迎系統
+│   ├── users/                     # 用戶註冊
 │   └── url_safety/                # URL 安全檢查
 ├── config/                        # 配置文件
 │   ├── __init__.py
@@ -125,6 +127,11 @@ python main.py
 ### 歡迎模組 (`modules/welcome`)
 - **功能**：新成員歡迎、重試機制
 - **配置**：`WELCOME_ENABLED`, `WELCOME_CHANNEL_IDS`
+- **依賴**：無
+
+### 用戶模組 (`modules/users`)
+- **功能**：表單收集並授予身份組
+- **配置**：`USER_MODULE_ENABLED`, `REGISTERED_ROLE_ID`
 - **依賴**：無
 
 ### 會議模組 (`modules/meetings`)
