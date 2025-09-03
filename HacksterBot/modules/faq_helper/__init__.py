@@ -205,19 +205,15 @@ class NotionPublicFaq:
 
 
 class MarkDoneView(discord.ui.View):
-    """Persistent view with a single "標記已完成" button."""
+    """Persistent view with a single "標記已完成" button (static custom_id)."""
 
     def __init__(self, *, timeout: Optional[float] = None):
         super().__init__(timeout=timeout)
-        # Register a persistent button. custom_id format encodes thread and message ids
-        # custom_id = faq_done:{thread_id}:{origin_message_id}:{role_id}
-        # The label remains constant in this persistent view; concrete IDs come from message-specific views
 
     @discord.ui.button(label="標記已完成", style=discord.ButtonStyle.primary, custom_id="faq_done")
     async def mark_done(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
-        # The actual custom_id sent with message will be overridden per-message using a cloned view.
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send("此按鈕僅作為持久化註冊，請於實際討論串使用。", ephemeral=True)
+        await interaction.followup.send("此為持久化註冊用視圖。", ephemeral=True)
 
 
 # -----------------------------
@@ -249,6 +245,7 @@ class FaqHelperModule(ModuleBase):
             self._ai_agent = await create_general_ai_agent(self.config)
 
             # Register persistent view so existing messages' buttons remain active after restart
+            # Register persistent view with static custom_id so buttons stay active after restarts
             self.bot.add_view(MarkDoneRuntime(self))
 
             # Listen to message events
@@ -314,7 +311,7 @@ class FaqHelperModule(ModuleBase):
             logger.info("No FAQ pairs parsed from Notion page")
 
         # Compose response and UI
-        view = self._build_runtime_view(thread_id=thread.id, origin_message_id=origin_message.id, staff_role_id=event_cfg.staff_role_id)
+        view = self._build_runtime_view()
 
         if matched_answer:
             # Mark with an informative emoji (not checkmark)
@@ -334,14 +331,9 @@ class FaqHelperModule(ModuleBase):
                 "按下下方按鈕可在問題解決後標記完成。"
             ), view=view)
 
-    def _build_runtime_view(self, *, thread_id: int, origin_message_id: int, staff_role_id: int) -> discord.ui.View:
-        view = MarkDoneRuntime(self)
-        # Override button custom_id per message to encode context
-        # We rely on a single button in the view at index 0
-        for child in view.children:
-            if isinstance(child, discord.ui.Button):
-                child.custom_id = f"faq_done:{thread_id}:{origin_message_id}:{staff_role_id}"
-        return view
+    def _build_runtime_view(self) -> discord.ui.View:
+        # Use static custom_id; context is derived at click time from thread/channel
+        return MarkDoneRuntime(self)
 
     async def _semantic_pick(self, user_question: str, pairs: List[Tuple[str, str]]) -> Tuple[Optional[str], Optional[str]]:
         if not self._ai_agent:
@@ -399,47 +391,41 @@ class MarkDoneRuntime(discord.ui.View):
         super().__init__(timeout=timeout)
         self.module = module
 
-    @discord.ui.button(label="標記已完成", style=discord.ButtonStyle.success, custom_id="faq_done:runtime")
+    @discord.ui.button(label="標記已完成", style=discord.ButtonStyle.success, custom_id="faq_done")
     async def _done(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
         try:
-            # Extract ids
-            cid = button.custom_id or ""
-            if not cid.startswith("faq_done:"):
-                await interaction.response.send_message("按鈕資訊有誤。", ephemeral=True)
-                return
-            parts = cid.split(":")
-            if len(parts) != 4:
-                await interaction.response.send_message("按鈕參數缺失。", ephemeral=True)
-                return
-            thread_id = int(parts[1])
-            origin_message_id = int(parts[2])
-            staff_role_id = int(parts[3])
-
-            # Permission: staff role OR original author
+            # Context from thread and config
             assert interaction.guild is not None
             member = interaction.user if isinstance(interaction.user, discord.Member) else interaction.guild.get_member(interaction.user.id)
             if not isinstance(member, discord.Member):
                 await interaction.response.send_message("無法驗證身分。", ephemeral=True)
                 return
 
-            origin_msg_author_id: Optional[int] = None
-            # Fetch parent channel and original message
             channel = interaction.channel
-            if isinstance(channel, discord.Thread):
-                parent = channel.parent
-                if parent is None:
-                    await interaction.response.send_message("找不到父頻道。", ephemeral=True)
-                    return
-                try:
-                    origin_message = await parent.fetch_message(origin_message_id)
-                    origin_msg_author_id = origin_message.author.id
-                except Exception:
-                    origin_message = None
-            else:
+            if not isinstance(channel, discord.Thread):
                 await interaction.response.send_message("請在討論串內操作。", ephemeral=True)
                 return
 
-            has_staff = any(r.id == staff_role_id for r in member.roles)
+            parent = channel.parent
+            if parent is None:
+                await interaction.response.send_message("找不到父頻道。", ephemeral=True)
+                return
+
+            # Resolve event config by question channel id
+            event_cfg = self.module._channel_map.get(parent.id)
+            staff_role_id = event_cfg.staff_role_id if event_cfg else 0
+
+            # Starter/original message of the thread
+            origin_message = None
+            origin_msg_author_id: Optional[int] = None
+            try:
+                origin_message = await channel.starter_message()
+                if origin_message is not None:
+                    origin_msg_author_id = origin_message.author.id
+            except Exception:
+                origin_message = None
+
+            has_staff = any(r.id == staff_role_id for r in member.roles) if staff_role_id else False
             is_author = (origin_msg_author_id is not None and member.id == origin_msg_author_id)
             if not (has_staff or is_author):
                 await interaction.response.send_message("只有工作人員或提問者可以標記完成。", ephemeral=True)
