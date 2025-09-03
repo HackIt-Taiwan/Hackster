@@ -152,100 +152,6 @@ class SearchConfig:
 
 
 @dataclass
-class InviteConfig:
-    """Invite system configuration."""
-    enabled: bool = field(default_factory=lambda: os.getenv("INVITE_ENABLED", "true").lower() == "true")
-    track_invites: bool = field(default_factory=lambda: os.getenv("INVITE_TRACK_ENABLED", "true").lower() == "true")
-    rewards_enabled: bool = field(default_factory=lambda: os.getenv("INVITE_REWARDS_ENABLED", "true").lower() == "true")
-    notification_channel_id: int = field(default_factory=lambda: int(os.getenv("INVITE_NOTIFICATION_CHANNEL_ID", "0")))
-    leaderboard_channel_id: int = field(default_factory=lambda: int(os.getenv("INVITE_LEADERBOARD_CHANNEL_ID", "0")))
-    
-    # Event configuration
-    events_config_file: str = field(default_factory=lambda: os.getenv("INVITE_EVENTS_CONFIG", "data/invite_events.json"))
-    check_events_on_invite: bool = field(default_factory=lambda: os.getenv("INVITE_CHECK_EVENTS", "true").lower() == "true")
-    
-    # Ticket rewards
-    ticket_per_invite: int = field(default_factory=lambda: int(os.getenv("INVITE_TICKET_PER_INVITE", "1")))
-    ticket_type: str = field(default_factory=lambda: os.getenv("INVITE_TICKET_TYPE", "invite"))
-    
-    # Notifications
-    notify_on_invite: bool = field(default_factory=lambda: os.getenv("INVITE_NOTIFY_ON_INVITE", "true").lower() == "true")
-    notify_on_leave: bool = field(default_factory=lambda: os.getenv("INVITE_NOTIFY_ON_LEAVE", "true").lower() == "true")
-
-
-@dataclass
-class RecordingConfig:
-    """Recording system configuration."""
-    enabled: bool = field(default_factory=lambda: os.getenv("RECORDING_ENABLED", "true").lower() == "true")
-    bot_tokens: str = field(default_factory=lambda: os.getenv("RECORDING_BOT_TOKENS", ""))
-    
-    # Channel settings
-    trigger_channel_name: str = field(default_factory=lambda: os.getenv("RECORDING_TRIGGER_CHANNEL_NAME", "會議室"))
-    forum_channel_name: str = field(default_factory=lambda: os.getenv("RECORDING_FORUM_CHANNEL_NAME", "會議記錄"))
-    
-    # Message templates
-    forum_content_template: str = field(default_factory=lambda: os.getenv("RECORDING_FORUM_CONTENT_TEMPLATE", 
-        "**會議記錄**\n\n會議發起人: {initiator}\n會議開始時間: {time}\n會議頻道: {channel}\n\n參與者 {initiator} 加入了會議"))
-    join_message_template: str = field(default_factory=lambda: os.getenv("RECORDING_JOIN_MESSAGE_TEMPLATE", "{member} 加入會議"))
-    leave_message_template: str = field(default_factory=lambda: os.getenv("RECORDING_LEAVE_MESSAGE_TEMPLATE", "{member} 離開會議"))
-    ended_message_template: str = field(default_factory=lambda: os.getenv("RECORDING_ENDED_MESSAGE_TEMPLATE", 
-        "**會議結束**\n會議持續時間: {duration}\n參與者: {participants}\n"))
-    
-    # Timing settings
-    meeting_close_delay: int = field(default_factory=lambda: int(os.getenv("RECORDING_MEETING_CLOSE_DELAY", "5")))
-    max_wait_seconds: int = field(default_factory=lambda: int(os.getenv("RECORDING_MAX_WAIT_SECONDS", "86400")))
-
-
-@dataclass
-class MeetingsConfig:
-    """Meeting scheduling system configuration."""
-    enabled: bool = field(default_factory=lambda: os.getenv("MEETINGS_ENABLED", "true").lower() == "true")
-    
-    # Channel settings
-    scheduling_channels: List[str] = field(default_factory=lambda: os.getenv("MEETINGS_SCHEDULING_CHANNELS", "").split(",") if os.getenv("MEETINGS_SCHEDULING_CHANNELS") else [])
-    meeting_category_name: str = field(default_factory=lambda: os.getenv("MEETINGS_CATEGORY_NAME", "會議"))
-    announcement_channel_id: int = field(default_factory=lambda: int(os.getenv("MEETINGS_ANNOUNCEMENT_CHANNEL_ID", "0")))
-    
-    # AI configuration
-    time_parser_ai_service: str = field(default_factory=lambda: os.getenv("MEETINGS_TIME_PARSER_AI_SERVICE", os.getenv("SECONDARY_MODEL_PROVIDER", "gemini")))
-    time_parser_model: str = field(default_factory=lambda: os.getenv("MEETINGS_TIME_PARSER_MODEL", os.getenv("SECONDARY_MODEL_NAME", "gemini-2.0-flash")))
-    backup_time_parser_ai_service: str = field(default_factory=lambda: os.getenv("MEETINGS_BACKUP_TIME_PARSER_AI_SERVICE", os.getenv("PRIMARY_MODEL_PROVIDER", "gemini")))
-    backup_time_parser_model: str = field(default_factory=lambda: os.getenv("MEETINGS_BACKUP_TIME_PARSER_MODEL", os.getenv("PRIMARY_MODEL_NAME", "gemini-2.0-flash")))
-    
-    # Timezone settings
-    default_timezone: str = field(default_factory=lambda: os.getenv("MEETINGS_DEFAULT_TIMEZONE", "Asia/Taipei"))
-    
-    # Reminder settings
-    reminder_24h_enabled: bool = field(default_factory=lambda: os.getenv("MEETINGS_REMINDER_24H_ENABLED", "true").lower() == "true")
-    reminder_5min_enabled: bool = field(default_factory=lambda: os.getenv("MEETINGS_REMINDER_5MIN_ENABLED", "true").lower() == "true")
-    
-    # Voice channel settings
-    auto_create_voice_channel: bool = field(default_factory=lambda: os.getenv("MEETINGS_AUTO_CREATE_VOICE_CHANNEL", "true").lower() == "true")
-    auto_start_recording: bool = field(default_factory=lambda: os.getenv("MEETINGS_AUTO_START_RECORDING", "true").lower() == "true")
-    voice_channel_delete_delay: int = field(default_factory=lambda: int(os.getenv("MEETINGS_VOICE_CHANNEL_DELETE_DELAY", "30")))
-    
-    # Meeting management
-    max_meeting_duration_hours: int = field(default_factory=lambda: int(os.getenv("MEETINGS_MAX_DURATION_HOURS", "8")))
-    allow_user_reschedule: bool = field(default_factory=lambda: os.getenv("MEETINGS_ALLOW_USER_RESCHEDULE", "true").lower() == "true")
-    allow_user_cancel: bool = field(default_factory=lambda: os.getenv("MEETINGS_ALLOW_USER_CANCEL", "true").lower() == "true")
-
-
-@dataclass
-class BridgeTimeConfig:
-    """Meeting time bridging module configuration."""
-    enabled: bool = field(default_factory=lambda: os.getenv("BRIDGE_TIME_ENABLED", "true").lower() == "true")
-    ai_service: str = field(default_factory=lambda: os.getenv("BRIDGE_TIME_AI_SERVICE", os.getenv("SECONDARY_MODEL_PROVIDER", "gemini")))
-    ai_model: str = field(default_factory=lambda: os.getenv("BRIDGE_TIME_AI_MODEL", os.getenv("SECONDARY_MODEL_NAME", "gemini-2.0-flash")))
-
-
-@dataclass
-class UserModuleConfig:
-    """Configuration for the user registration module."""
-    enabled: bool = field(default_factory=lambda: os.getenv("USER_MODULE_ENABLED", "true").lower() == "true")
-    registered_role_id: int = field(default_factory=lambda: int(os.getenv("REGISTERED_ROLE_ID", "0")))
-
-
-@dataclass
 class LoggingConfig:
     """Logging configuration."""
     level: str = "INFO"
@@ -266,11 +172,6 @@ class Config:
     welcome: WelcomeConfig = field(default_factory=WelcomeConfig)
     ticket: TicketConfig = field(default_factory=TicketConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
-    invite: InviteConfig = field(default_factory=InviteConfig)
-    recording: RecordingConfig = field(default_factory=RecordingConfig)
-    meetings: MeetingsConfig = field(default_factory=MeetingsConfig)
-    bridge_time: BridgeTimeConfig = field(default_factory=BridgeTimeConfig)
-    user: UserModuleConfig = field(default_factory=UserModuleConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     
     # General settings
@@ -328,11 +229,6 @@ def load_config() -> Config:
         welcome=WelcomeConfig(),
         ticket=TicketConfig(),
         search=SearchConfig(),
-        invite=InviteConfig(),
-        recording=RecordingConfig(),
-        meetings=MeetingsConfig(),
-        bridge_time=BridgeTimeConfig(),
-        user=UserModuleConfig(),
         logging=LoggingConfig(),
         
         debug=os.getenv("DEBUG", "false").lower() == "true",

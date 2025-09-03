@@ -151,13 +151,6 @@ class HacksterBot(commands.Bot):
             'url_safety': self.config.url_safety.enabled,
             'welcome': self.config.welcome.enabled,
             'tickets': self.config.ticket.enabled,
-            'tickets_system': True,  # Centralized ticket system is always enabled
-            'invites': self.config.invite.enabled,
-            'blackjack': True,  # Blackjack game module is enabled by default
-            'meetings': self.config.meetings.enabled,  # Meeting scheduling system
-            'recording': self.config.recording.enabled,  # Meeting recording system
-            'bridge_time': self.config.bridge_time.enabled,  # Meeting time bridge
-            'users': self.config.user.enabled,
         }
         
         return module_config_map.get(module_name, True)
