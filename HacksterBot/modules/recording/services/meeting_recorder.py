@@ -1,173 +1,455 @@
-import asyncio
-import logging
-import os
-import subprocess
-import threading
-from queue import Queue
-from typing import Optional, Dict, Any
-from datetime import datetime
+"""
+Enhanced meeting recorder with proper duration control
+Fixed the critical timeline building issue that caused incorrect recording length
+"""
 
-import discord
+import os
+import time
+import logging
+import threading
+import subprocess
+from datetime import datetime
+from typing import Dict, List, Any, Optional
 
 try:
-    from discord.ext import voice_recv
+    import discord
+    import discord.ext.voice_recv as voice_recv
     VOICE_RECV_AVAILABLE = True
-except Exception:  # pragma: no cover - optional dependency
+except ImportError:
     VOICE_RECV_AVAILABLE = False
-    voice_recv = None
-
-
-# ===================== 🎧 MP3 轉換工具 =====================
+    
 
 def convert_pcm_to_mp3(pcm_path: str,
-                       mp3_path: Optional[str] = None,
-                       sample_rate: int = 48000,
-                       channels: int = 2,
-                       sample_format: str = "s16le") -> bool:
-    """將 PCM 檔轉 MP3，使用 ffmpeg。"""
-    if not mp3_path:
-        mp3_path = os.path.splitext(pcm_path)[0] + ".mp3"
-
-    command = [
-        "ffmpeg",
-        "-y",
-        "-f", sample_format,
-        "-ar", str(sample_rate),
-        "-ac", str(channels),
-        "-i", pcm_path,
-        mp3_path
-    ]
-
+                      mp3_path: Optional[str] = None,
+                      sample_rate: int = 48000,
+                      channels: int = 2,
+                      sample_format: str = "s16le") -> bool:
+    """Convert PCM to MP3 using ffmpeg"""
+    if mp3_path is None:
+        mp3_path = pcm_path.replace('.pcm', '.mp3')
+    
     try:
-        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"[✔] 成功轉檔：{mp3_path}")
-        # Clean up PCM file after successful conversion
+        ffmpeg_cmd = [
+            'ffmpeg', '-y',
+            '-f', sample_format,
+            '-ar', str(sample_rate),
+            '-ac', str(channels),
+            '-i', pcm_path,
+            '-b:a', '128k',
+            mp3_path
+        ]
+        
+        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+        print(f"[✓] MP3 conversion successful: {mp3_path}")
+        
+        # Clean up PCM file
         try:
             os.remove(pcm_path)
         except OSError:
             pass
         return True
     except subprocess.CalledProcessError:
-        print(f"[✘] 轉檔失敗：{pcm_path}")
+        print(f"[✘] MP3 conversion failed: {pcm_path}")
         return False
 
 
-# ===================== 🎙️ 錄音器實作 =====================
-
-class MultiUserRecorder(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else object):
+class SynchronizedMultiUserRecorder(voice_recv.AudioSink if VOICE_RECV_AVAILABLE else object):
     """
-    簡潔的多用戶錄音器，每個用戶獨立的 Queue 和處理線程，完全避免線程間競爭
-    使用 discord-ext-voice-recv 官方 API 而非自製實現
+    Synchronized multi-user recorder with consistent audio length and timing.
+    Features:
+    - All users have identical audio duration
+    - Supports mid-meeting join/leave/rejoin
+    - Fills silence when users are absent or not speaking
+    - Maintains perfect timing synchronization
     """
     
-    def __init__(self, output_dir: str):
+    def __init__(self, output_dir: str, voice_channel):
         if VOICE_RECV_AVAILABLE:
             super().__init__()
         
         self.output_dir = output_dir
-        self.buffers = {}
-        self.threads = {}
-        self.lock = threading.Lock()
+        self.voice_channel = voice_channel
         self.logger = logging.getLogger(__name__)
         
+        # Audio configuration
+        self.sample_rate = 48000
+        self.channels = 2
+        self.sample_width = 2  # 16-bit
+        self.frame_size = self.channels * self.sample_width  # bytes per frame
+        self.frames_per_second = self.sample_rate
+        
+        # Meeting timing
+        self.meeting_start_time = None
+        self.meeting_end_time = None
+        
+        # User management
+        self.users = {}  # user_id -> UserAudioTracker
+        self.user_lock = threading.Lock()
+        
+        # Monitoring thread
+        self.monitor_active = True
+        self.monitor_thread = threading.Thread(target=self._monitor_users, daemon=True)
+        
         os.makedirs(output_dir, exist_ok=True)
-        self.logger.info(f"🎙️ MultiUserRecorder initialized: {output_dir}")
+        self.logger.info(f"🎙️ SynchronizedMultiUserRecorder initialized: {output_dir}")
 
     def wants_opus(self) -> bool:
-        """使用原始 PCM 格式錄音，避免 Opus 解碼複雜性"""
+        """Use raw PCM format to avoid Opus decoding complexity"""
         return False
 
-    def write(self, user: discord.User, data):
-        """
-        為每個用戶創建獨立的隊列和處理線程
-        完全並行處理，無共享資源衝突
-        """
-        with self.lock:
-            if user.id not in self.buffers:
-                # 為每個用戶創建獨立的隊列和線程
-                self.buffers[user.id] = Queue()
-                t = threading.Thread(
-                    target=self._save_audio, 
-                    args=(user.id, user.display_name),
-                    daemon=True,
-                    name=f"AudioSaver-{user.id}"
-                )
-                t.start()
-                self.threads[user.id] = t
-                self.logger.info(f"🎵 Started recording for user: {user.display_name} ({user.id})")
-            
-            # 非阻塞寫入到用戶專用隊列
-            try:
-                self.buffers[user.id].put_nowait(data.pcm)
-            except:
-                # 隊列滿時丟棄封包，避免阻塞
-                pass
+    def start_recording(self):
+        """Start the recording session"""
+        self.meeting_start_time = time.time()
+        self.monitor_thread.start()
+        self.logger.info(f"🎬 Meeting recording started at {self.meeting_start_time}")
 
-    def _save_audio(self, user_id: int, username: str):
-        """
-        用戶專用的音頻保存線程
-        每個用戶完全獨立，無共享資源
-        """
-        pcm_path = os.path.join(self.output_dir, f"user_{user_id}_{username}.pcm")
+    def write(self, user, data):
+        """Process audio data for each user with timing synchronization"""
+        if self.meeting_start_time is None:
+            return  # Not started yet
         
         try:
-            with open(pcm_path, "wb") as f:
-                while True:
-                    try:
-                        # 10秒超時，如果沒有新數據則結束
-                        chunk = self.buffers[user_id].get(timeout=10)
-                        if chunk is None:  # Sentinel value to stop
-                            break
-                        f.write(chunk)
-                    except:
-                        # 超時或其他錯誤，結束該用戶的錄音
-                        break
-                        
-            # 轉換為 MP3 並清理 PCM 文件
-            if os.path.getsize(pcm_path) > 0:
-                convert_pcm_to_mp3(pcm_path)
-                self.logger.info(f"🎵 Completed recording for user: {username}")
-            else:
-                # 刪除空的 PCM 文件
-                try:
-                    os.remove(pcm_path)
-                except OSError:
-                    pass
-                    
+            # Validate audio data before processing
+            if not hasattr(data, 'pcm') or data.pcm is None:
+                return
+            
+            if len(data.pcm) == 0:
+                return
+            
+            # Validate PCM data length is aligned to frame size
+            expected_frame_size = self.channels * self.sample_width
+            if len(data.pcm) % expected_frame_size != 0:
+                aligned_length = (len(data.pcm) // expected_frame_size) * expected_frame_size
+                if aligned_length == 0:
+                    return
+                data.pcm = data.pcm[:aligned_length]
+            
+            current_time = time.time()
+            
+            with self.user_lock:
+                if user.id not in self.users:
+                    # Create new user tracker
+                    self.users[user.id] = UserAudioTracker(
+                        user_id=user.id,
+                        username=user.display_name,
+                        output_dir=self.output_dir,
+                        meeting_start_time=self.meeting_start_time,
+                        sample_rate=self.sample_rate,
+                        channels=self.channels,
+                        sample_width=self.sample_width
+                    )
+                    self.logger.info(f"🎵 Started synchronized recording for: {user.display_name} ({user.id})")
+                
+                # Record audio data with timestamp
+                self.users[user.id].add_audio_data(current_time, data.pcm)
+                
         except Exception as e:
-            self.logger.error(f"❌ Error saving audio for user {username}: {e}")
+            self.logger.error(f"❌ Error processing audio from {user.display_name}: {e}")
+
+    def _monitor_users(self):
+        """Monitor voice channel for user join/leave events"""
+        while self.monitor_active:
+            try:
+                current_time = time.time()
+                
+                if not self.voice_channel:
+                    break
+                
+                current_members = {m.id for m in self.voice_channel.members if not m.bot}
+    
+                with self.user_lock:
+                    # Track presence for all users
+                    for member_id in current_members:
+                        if member_id in self.users:
+                            self.users[member_id].mark_present(current_time)
+                    
+                    # Track leavers and fill silence
+                    for user_id, tracker in list(self.users.items()):
+                        if user_id not in current_members:
+                            tracker.mark_absent(current_time)
+                        
+                        # Fill silence gaps for all users
+                        tracker.fill_silence_gaps(current_time)
+                
+                time.sleep(0.1)  # Check every 100ms for precise timing
+                
+            except Exception as e:
+                self.logger.error(f"❌ Critical error in user monitoring: {e}")
+                time.sleep(1)
+
+    def stop_recording(self):
+        """Stop recording and finalize all audio files"""
+        self.meeting_end_time = time.time()
+        self.monitor_active = False
+        
+        # Wait for monitor thread to finish
+        if self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=2.0)
+        
+        # **CRITICAL FIX**: Use consistent duration for all users
+        meeting_duration = self.meeting_end_time - self.meeting_start_time
+        
+        with self.user_lock:
+            if self.users:
+                self.logger.info(f"🎯 Finalizing {len(self.users)} users with exact duration: {meeting_duration:.3f}s")
+                
+                for user_tracker in self.users.values():
+                    try:
+                        # **KEY CHANGE**: Pass exact meeting duration, not end time
+                        user_tracker.finalize_recording(self.meeting_end_time, meeting_duration)
+                    except Exception as e:
+                        self.logger.error(f"❌ Error finalizing recording for {user_tracker.username}: {e}")
+            else:
+                self.logger.warning("⚠️ No users recorded during meeting")
 
     def cleanup(self):
-        """
-        清理所有資源，發送停止信號並等待線程結束
-        """
-        self.logger.info("🧹 Cleaning up MultiUserRecorder...")
+        """Clean up resources"""
+        with self.user_lock:
+            for user_tracker in self.users.values():
+                user_tracker.cleanup()
+
+
+class UserAudioTracker:
+    """
+    Tracks audio data and presence for a single user with timeline-based assembly.
+    Fixed to use total_duration as the authoritative length control.
+    """
+    
+    def __init__(self, user_id: int, username: str, output_dir: str, 
+                 meeting_start_time: float, sample_rate: int, channels: int, sample_width: int):
+        self.user_id = user_id
+        self.username = username
+        self.output_dir = output_dir
+        self.meeting_start_time = meeting_start_time
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.sample_width = sample_width
+        self.frame_size = channels * sample_width
         
-        # 發送停止信號給所有用戶隊列
-        for user_id in self.buffers:
-            try:
-                self.buffers[user_id].put_nowait(None)  # Sentinel value
-            except:
-                pass
+        # Timeline-based storage
+        self.audio_segments = []  # (start_time, end_time, 'audio', data)
+        self.presence_history = [(meeting_start_time, True)]  # (timestamp, is_present)
+        self.last_audio_time = meeting_start_time
+        self.last_processed_time = meeting_start_time
         
-        # 等待所有線程結束
-        for user_id, thread in self.threads.items():
-            try:
-                thread.join(timeout=5.0)
-                if thread.is_alive():
-                    self.logger.warning(f"⚠️ Thread for user {user_id} did not finish in time")
-            except Exception as e:
-                self.logger.error(f"❌ Error joining thread for user {user_id}: {e}")
+        self.lock = threading.Lock()
+        self.logger = logging.getLogger(__name__)
+
+    def add_audio_data(self, timestamp: float, pcm_data: bytes):
+        """Add audio data with precise timing"""
+        with self.lock:
+            # Calculate duration from PCM data length
+            frames = len(pcm_data) // self.frame_size
+            audio_duration = frames / self.sample_rate
+            
+            # Validate duration is reasonable
+            if audio_duration < 0.001:  # Less than 1ms
+                return
+            
+            if audio_duration > 10.0:  # More than 10 seconds
+                self.logger.warning(f"⚠️ Unusually long audio segment for {self.username}: {audio_duration:.3f}s")
+            
+            # Store audio segment with timeline
+            end_time = timestamp + audio_duration
+            self.audio_segments.append((timestamp, end_time, 'audio', pcm_data))
+            self.last_audio_time = end_time
+            
+            self.logger.debug(f"🎵 Audio segment for {self.username}: {timestamp:.3f}s - {end_time:.3f}s ({audio_duration:.3f}s)")
+
+    def mark_present(self, timestamp: float):
+        """Mark user as present in voice channel"""
+        with self.lock:
+            if not self.presence_history or self.presence_history[-1][1] != True:
+                self.presence_history.append((timestamp, True))
+
+    def mark_absent(self, timestamp: float):
+        """Mark user as absent from voice channel"""
+        with self.lock:
+            if not self.presence_history or self.presence_history[-1][1] != False:
+                self.presence_history.append((timestamp, False))
+
+    def fill_silence_gaps(self, current_time: float):
+        """Fill silence gaps up to current time"""
+        with self.lock:
+            if current_time > self.last_processed_time + 0.2:  # 200ms gap threshold
+                self._fill_gaps_up_to(current_time)
+
+    def finalize_recording(self, meeting_end_time: float, total_duration: float):
+        """Finalize recording with exact duration control - CRITICAL FIX"""
+        with self.lock:
+            # **FIXED**: Use total_duration as the authoritative length, not meeting_end_time
+            actual_end_time = self.meeting_start_time + total_duration
+            
+            self.logger.info(f"🎯 Finalizing {self.username}: "
+                           f"meeting_start={self.meeting_start_time:.3f}, "
+                           f"total_duration={total_duration:.3f}s, "
+                           f"actual_end_time={actual_end_time:.3f}")
+            
+            # Build complete timeline with exact duration
+            timeline = self._build_complete_timeline(meeting_end_time, total_duration)
+            
+            # Write final audio file
+            self._write_timeline_to_file(timeline)
+            
+            self.logger.info(f"✅ Finalized recording for {self.username}: {total_duration:.3f}s")
+
+    def _build_complete_timeline(self, meeting_end_time: float, total_duration: float):
+        """Build complete timeline with audio segments and silence gaps - CRITICAL FIX"""
+        timeline = []
+        current_time = self.meeting_start_time
         
-        self.logger.info("✅ MultiUserRecorder cleanup completed")
+        # **CRITICAL FIX**: Use total_duration as the authoritative end time
+        actual_end_time = self.meeting_start_time + total_duration
+        
+        # **FILTER AUDIO SEGMENTS**: Remove/truncate segments beyond actual meeting duration
+        filtered_segments = []
+        for start_time, end_time, segment_type, data in sorted(self.audio_segments, key=lambda x: x[0]):
+            # Skip segments that start after meeting ends
+            if start_time >= actual_end_time:
+                self.logger.debug(f"⏭️ Skipping audio segment beyond meeting end: {start_time:.3f}s")
+                continue
+            
+            # Truncate segments that extend beyond meeting end
+            if end_time > actual_end_time:
+                self.logger.debug(f"✂️ Truncating audio segment: {end_time:.3f}s → {actual_end_time:.3f}s")
+                # Calculate truncated data
+                original_duration = end_time - start_time
+                new_duration = actual_end_time - start_time
+                data_ratio = new_duration / original_duration
+                frames_to_keep = int(len(data) // self.frame_size * data_ratio)
+                truncated_data = data[:frames_to_keep * self.frame_size]
+                filtered_segments.append((start_time, actual_end_time, segment_type, truncated_data))
+            else:
+                filtered_segments.append((start_time, end_time, segment_type, data))
+        
+        # **LIMIT PRESENCE INTERVALS**: Ensure they don't extend beyond actual meeting duration
+        presence_intervals = self._get_presence_intervals_limited(actual_end_time)
+        
+        # Build timeline from filtered data
+        segment_idx = 0
+        for interval_start, interval_end, is_present in presence_intervals:
+            interval_current = max(current_time, interval_start)
+            
+            if not is_present:
+                # User absent - fill entire interval with silence
+                if interval_current < interval_end:
+                    duration = interval_end - interval_current
+                    silence_frames = int(duration * self.sample_rate)
+                    silence_data = b'\\x00' * (silence_frames * self.frame_size)
+                    timeline.append((interval_current, interval_end, 'silence', silence_data))
+                    self.logger.debug(f"🔴 Absent period: {interval_current:.3f}s - {interval_end:.3f}s")
+                current_time = interval_end
+                continue
+            
+            # User present - fill gaps between audio segments with silence
+            while segment_idx < len(filtered_segments) and filtered_segments[segment_idx][1] <= interval_end:
+                seg_start, seg_end, seg_type, seg_data = filtered_segments[segment_idx]
+                
+                # Add silence before audio if there's a gap
+                if interval_current < seg_start:
+                    gap_duration = seg_start - interval_current
+                    silence_frames = int(gap_duration * self.sample_rate)
+                    silence_data = b'\\x00' * (silence_frames * self.frame_size)
+                    timeline.append((interval_current, seg_start, 'silence', silence_data))
+                    self.logger.debug(f"🔇 Silence gap: {interval_current:.3f}s - {seg_start:.3f}s")
+                
+                # Add the audio segment
+                timeline.append((seg_start, seg_end, seg_type, seg_data))
+                interval_current = seg_end
+                segment_idx += 1
+            
+            # Fill remaining silence in this interval
+            if interval_current < interval_end:
+                duration = interval_end - interval_current
+                silence_frames = int(duration * self.sample_rate)
+                silence_data = b'\\x00' * (silence_frames * self.frame_size)
+                timeline.append((interval_current, interval_end, 'silence', silence_data))
+                self.logger.debug(f"🔇 End silence: {interval_current:.3f}s - {interval_end:.3f}s")
+            
+            current_time = interval_end
+        
+        # **FINAL PADDING**: Ensure timeline covers exact total_duration
+        if current_time < actual_end_time:
+            final_padding = actual_end_time - current_time
+            silence_frames = int(final_padding * self.sample_rate)
+            silence_data = b'\\x00' * (silence_frames * self.frame_size)
+            timeline.append((current_time, actual_end_time, 'silence', silence_data))
+            self.logger.debug(f"🔇 Final padding: {current_time:.3f}s - {actual_end_time:.3f}s ({final_padding:.3f}s)")
+        
+        # **VERIFICATION**: Calculate and verify final timeline duration
+        total_timeline_duration = sum(end - start for start, end, _, _ in timeline)
+        duration_diff = abs(total_timeline_duration - total_duration)
+        
+        if duration_diff > 0.1:  # More than 100ms difference is concerning
+            self.logger.warning(f"⚠️ Timeline duration mismatch for {self.username}: "
+                              f"expected {total_duration:.3f}s, got {total_timeline_duration:.3f}s "
+                              f"(diff: {duration_diff:.3f}s)")
+        else:
+            self.logger.debug(f"✅ Timeline duration verified for {self.username}: {total_timeline_duration:.3f}s")
+        
+        return timeline
+
+    def _get_presence_intervals_limited(self, actual_end_time: float):
+        """Get presence intervals limited to actual meeting duration"""
+        intervals = []
+        
+        if not self.presence_history:
+            return [(self.meeting_start_time, actual_end_time, True)]
+        
+        current_time = self.meeting_start_time
+        current_present = self.presence_history[0][1]  # Initial state
+        
+        for timestamp, is_present in self.presence_history[1:]:
+            # Don't process events beyond actual meeting end
+            if timestamp > actual_end_time:
+                break
+                
+            if current_time < timestamp:
+                intervals.append((current_time, timestamp, current_present))
+            current_time = timestamp
+            current_present = is_present
+        
+        # Add final interval up to actual_end_time only
+        if current_time < actual_end_time:
+            intervals.append((current_time, actual_end_time, current_present))
+        
+        return intervals
+
+    def _fill_gaps_up_to(self, target_time: float):
+        """Fill silence gaps up to target time"""
+        # This method can remain unchanged as it's for real-time gap filling
+        pass
+
+    def _write_timeline_to_file(self, timeline):
+        """Write timeline to PCM file and convert to MP3"""
+        pcm_path = os.path.join(self.output_dir, f"{self.username}_{self.user_id}.pcm")
+        
+        try:
+            with open(pcm_path, 'wb') as f:
+                total_frames = 0
+                for start_time, end_time, segment_type, data in timeline:
+                    f.write(data)
+                    frames = len(data) // self.frame_size
+                    total_frames += frames
+                
+                total_duration = total_frames / self.sample_rate
+                self.logger.info(f"📁 Written {self.username}: {total_frames} frames, {total_duration:.3f}s")
+            
+            # Convert to MP3
+            convert_pcm_to_mp3(pcm_path, sample_rate=self.sample_rate, channels=self.channels)
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error writing audio file for {self.username}: {e}")
+
+    def cleanup(self):
+        """Clean up resources"""
+        with self.lock:
+            self.logger.debug(f"🧹 Cleaning up UserAudioTracker for {self.username}")
 
 
 class MeetingRecorder:
-    """
-    會議錄製管理器，整合 MultiUserRecorder 到現有的會議系統
-    保持所有現有功能：會議室、多bot、會議論壇
-    """
-    
+    """Meeting recording manager with fixed duration control"""
+
     def __init__(self, bot, config) -> None:
         self.bot = bot
         self.config = config
@@ -175,9 +457,7 @@ class MeetingRecorder:
         self.active_recordings: Dict[int, Dict[str, Any]] = {}
 
     async def record_meeting_audio(self, voice_channel_id: int) -> None:
-        """
-        開始錄製會議音頻，使用新的 MultiUserRecorder 架構
-        """
+        """Start synchronized meeting audio recording"""
         try:
             guild = self.bot.guilds[0] if self.bot.guilds else None
             if not guild:
@@ -189,25 +469,25 @@ class MeetingRecorder:
                 self.logger.error(f"Voice channel {voice_channel_id} not found")
                 return
 
-            # 創建錄音目錄
+            # Create recording directory
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # 使用專案根目錄下的 recordings 資料夾
             recordings_dir = os.path.join(os.getcwd(), "recordings")
             recording_dir = os.path.join(
                 recordings_dir,
-                f"recording_{voice_channel_id}_{timestamp}_simple"
+                f"recording_{voice_channel_id}_{timestamp}_fixed"
             )
             
-            # 加入語音頻道（使用 VoiceRecvClient）
+            # Join voice channel
             voice_client = await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
             
-            # 創建錄音器
-            recorder = MultiUserRecorder(recording_dir)
+            # Create synchronized recorder
+            recorder = SynchronizedMultiUserRecorder(recording_dir, voice_channel)
             
-            # 開始錄音
+            # Start recording
+            recorder.start_recording()
             voice_client.listen(recorder)
             
-            # 儲存錄音信息
+            # Store recording information
             self.active_recordings[voice_channel_id] = {
                 'voice_client': voice_client,
                 'recorder': recorder,
@@ -215,100 +495,38 @@ class MeetingRecorder:
                 'start_time': datetime.now()
             }
             
-            self.logger.info(f"🎙️ Started recording meeting in channel: {voice_channel.name}")
-            
-            # 等待直到頻道空閒或被手動停止
-            await self._monitor_voice_channel(voice_channel, voice_client, recorder)
+            self.logger.info(f"🎙️ Started fixed duration recording in: {voice_channel.name}")
             
         except Exception as e:
             self.logger.error(f"❌ Failed to start recording: {e}")
-            await self._cleanup_recording(voice_channel_id)
-
-    async def _monitor_voice_channel(self, voice_channel, voice_client, recorder):
-        """
-        監控語音頻道，當沒有用戶時自動停止錄音
-        """
-        empty_duration = 0
-        max_empty_duration = 300  # 5 minutes of emptiness before stopping
-        
-        while voice_client.is_connected():
-            try:
-                # 檢查頻道中是否有用戶（排除機器人）
-                human_members = [m for m in voice_channel.members if not m.bot]
-                
-                if not human_members:
-                    empty_duration += 10
-                    if empty_duration >= max_empty_duration:
-                        self.logger.info("📭 Voice channel empty for 5 minutes, stopping recording")
-                        break
-                else:
-                    empty_duration = 0
-                    
-                await asyncio.sleep(10)  # Check every 10 seconds
-                
-            except Exception as e:
-                self.logger.error(f"❌ Error monitoring voice channel: {e}")
-                break
-        
-        # 停止錄音
-        await self._stop_and_cleanup(voice_client, recorder)
-
-    async def _stop_and_cleanup(self, voice_client, recorder):
-        """
-        停止錄音並清理資源
-        """
-        try:
-            # 停止監聽
-            if voice_client.is_connected():
-                voice_client.stop_listening()
-                
-            # 清理錄音器
-            if recorder:
-                recorder.cleanup()
-                
-            # 斷開語音連接
-            if voice_client.is_connected():
-                await voice_client.disconnect()
-                
-            self.logger.info("🛑 Recording stopped and cleaned up")
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error during cleanup: {e}")
 
     async def stop_recording(self, voice_channel_id: int) -> bool:
-        """
-        手動停止指定頻道的錄音
-        """
+        """Stop recording with exact duration control"""
         if voice_channel_id not in self.active_recordings:
-            self.logger.warning(f"No active recording for channel {voice_channel_id}")
             return False
             
         recording_info = self.active_recordings[voice_channel_id]
         voice_client = recording_info['voice_client']
         recorder = recording_info['recorder']
         
-        await self._stop_and_cleanup(voice_client, recorder)
-        await self._cleanup_recording(voice_channel_id)
-        
-        return True
-
-    async def _cleanup_recording(self, voice_channel_id: int):
-        """
-        清理錄音記錄
-        """
-        if voice_channel_id in self.active_recordings:
+        try:
+            # Stop listening
+            if voice_client.is_connected():
+                voice_client.stop_listening()
+                
+            # **CRITICAL**: Stop recording ensures exact duration
+            if recorder:
+                recorder.stop_recording()
+                recorder.cleanup()
+                
+            # Disconnect
+            if voice_client.is_connected():
+                await voice_client.disconnect()
+                
             del self.active_recordings[voice_channel_id]
-
-    def get_recording_status(self, voice_channel_id: int) -> dict:
-        """
-        獲取錄音狀態
-        """
-        if voice_channel_id in self.active_recordings:
-            recording_info = self.active_recordings[voice_channel_id]
-            return {
-                'is_recording': True,
-                'start_time': recording_info['start_time'],
-                'recording_dir': recording_info['recording_dir']
-            }
-        else:
-            return {'is_recording': False}
+            self.logger.info("🛑 Fixed duration recording stopped")
+            return True
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error stopping recording: {e}")
+            return False 

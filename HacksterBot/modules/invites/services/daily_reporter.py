@@ -332,10 +332,10 @@ class DailyReporter:
                     
                     ax.set_ylim(y_min, y_max)
                 else:
-                    # If no growth, show a small range around the value
+                    # If no growth, show flat line with minimal Y-axis range
                     center = daily_counts[0]
-                    range_size = max(center * 0.05, 5)  # 5% of value or minimum 5 units
-                    ax.set_ylim(max(0, center - range_size), center + range_size)
+                    padding = max(center * 0.02, 2)  # Minimal padding to show flat line
+                    ax.set_ylim(center - padding, center + padding)
             
             ax.tick_params(axis='both', which='major', labelsize=11, colors='#64748b', pad=10)
             
@@ -356,10 +356,10 @@ class DailyReporter:
             ax.grid(True, alpha=0.1, color='#cbd5e1', linestyle='-', linewidth=0.5)
             ax.set_axisbelow(True)
             
-            # Add subtle branding
-            ax.text(0.99, 0.02, 'HacksterBot 數據分析', transform=ax.transAxes,
-                   fontsize=9, fontweight='300', color='#94a3b8',
-                   ha='right', va='bottom', alpha=0.7)
+            # Remove branding text - commented out
+            # ax.text(0.99, 0.02, 'HacksterBot 數據分析', transform=ax.transAxes,
+            #        fontsize=9, fontweight='300', color='#94a3b8',
+            #        ha='right', va='bottom', alpha=0.7)
             
             # Clean layout with more top space for title
             plt.tight_layout(pad=3.0)
@@ -598,10 +598,10 @@ class DailyReporter:
                     
                     ax.set_ylim(y_min, y_max)
                 else:
-                    # If no growth, show a small range around the value
+                    # If no growth, show flat line with minimal Y-axis range
                     center = daily_counts[0]
-                    range_size = max(center * 0.05, 5)  # 5% of value or minimum 5 units
-                    ax.set_ylim(max(0, center - range_size), center + range_size)
+                    padding = max(center * 0.02, 2)  # Minimal padding to show flat line
+                    ax.set_ylim(center - padding, center + padding)
             
             ax.tick_params(axis='both', which='major', labelsize=11, colors='#64748b', pad=10)
             
@@ -623,10 +623,10 @@ class DailyReporter:
             ax.grid(True, alpha=0.1, color='#cbd5e1', linestyle='-', linewidth=0.5)
             ax.set_axisbelow(True)
             
-            # Branding
-            ax.text(0.99, 0.02, 'HacksterBot 數據分析', transform=ax.transAxes,
-                   fontsize=9, fontweight='300', color='#94a3b8',
-                   ha='right', va='bottom', alpha=0.7)
+            # Remove branding text - commented out
+            # ax.text(0.99, 0.02, 'HacksterBot 數據分析', transform=ax.transAxes,
+            #        fontsize=9, fontweight='300', color='#94a3b8',
+            #        ha='right', va='bottom', alpha=0.7)
             
             # Clean layout with more top space for title
             plt.tight_layout(pad=3.0)

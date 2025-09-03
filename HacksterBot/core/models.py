@@ -575,6 +575,7 @@ class RegisteredUser(Document):
     email = StringField(required=True, max_length=200)
     source = StringField(max_length=200)
     education_stage = StringField(max_length=50)
+    avatar_base64 = StringField()  # Base64 encoded user avatar
     registered_at = DateTimeField(default=datetime.utcnow)
 
     meta = {

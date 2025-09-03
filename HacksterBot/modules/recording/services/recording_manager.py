@@ -178,4 +178,4 @@ class RecordingManager:
                 return True
                     
         self.logger.warning(f"⚠️ No active recording found for channel {voice_channel_id}")
-        return False 
+        return False
