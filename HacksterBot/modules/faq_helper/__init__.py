@@ -25,6 +25,10 @@ from discord.ext import commands
 from core.module_base import ModuleBase
 from core.exceptions import ModuleError
 from modules.ai.services.ai_select import create_general_ai_agent
+try:
+    from notion_client import AsyncClient as NotionAsyncClient  # type: ignore
+except Exception:  # pragma: no cover
+    NotionAsyncClient = None  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +46,7 @@ class FaqEventConfig:
     question_channel_id: int
     staff_role_id: int
     notion_page_url: str
+    notion_api_key: Optional[str] = None
 
 
 def _load_faq_config(config_data_dir: str) -> List[FaqEventConfig]:
@@ -75,6 +80,7 @@ def _load_faq_config(config_data_dir: str) -> List[FaqEventConfig]:
                     question_channel_id=int(item.get("question_channel_id")),
                     staff_role_id=int(item.get("staff_role_id")),
                     notion_page_url=str(item.get("notion_page_url")),
+                    notion_api_key=str(item.get("notion_api_key")) if item.get("notion_api_key") else None,
                 )
             )
         except Exception:  # pragma: no cover - resilient parsing
@@ -87,125 +93,79 @@ def _load_faq_config(config_data_dir: str) -> List[FaqEventConfig]:
 # -----------------------------
 
 
-class NotionPublicFaq:
-    """Fetch and parse a Notion public page that contains FAQ entries.
+class NotionAPIFaq:
+    """Fetch FAQ items from Notion database using official API."""
 
-    目標：盡量以最簡單方式擷取頁面文字，萃取 (question, answer) 對。
-    - 先嘗試抓取 <table> 結構（若 page 使用資料庫表格公開顯示）
-    - 若無表格，備援：從全文中以常見欄位關鍵字切片（例如 問題/答案 或 Question/Answer）
-    - 不使用 Notion API，僅以公開網址 HTML 解析
-    """
+    def __init__(self, api_key: Optional[str]):
+        self.api_key = api_key
+        self.client = None
+        if api_key and NotionAsyncClient is not None:
+            self.client = NotionAsyncClient(auth=api_key)
 
-    USER_AGENT = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-    )
-
-    def __init__(self, session: Optional[aiohttp.ClientSession] = None):
-        self._session = session
-
-    async def fetch_pairs(self, url: str, timeout: float = 10.0) -> List[Tuple[str, str]]:
-        headers = {"User-Agent": self.USER_AGENT}
-        close_session = False
-        session = self._session
-        if session is None:
-            session = aiohttp.ClientSession()
-            close_session = True
+    async def fetch_pairs(self, database_id_or_url: str) -> List[Tuple[str, str]]:
+        if self.client is None:
+            logger.warning("Notion API client is not initialized")
+            return []
+        database_id = self._extract_database_id(database_id_or_url)
+        if not database_id:
+            logger.warning("Invalid Notion database id/url: %s", database_id_or_url)
+            return []
         try:
-            async with session.get(url, headers=headers, timeout=timeout) as resp:
-                html = await resp.text()
+            faqs: List[Tuple[str, str]] = []
+            cursor = None
+            while True:
+                resp = await self.client.databases.query(database_id=database_id, start_cursor=cursor)
+                for page in resp.get("results", []):
+                    props = page.get("properties", {})
+                    q = self._get_text(props.get("Question")) or self._get_text(props.get("問題"))
+                    a = self._get_text(props.get("Answer")) or self._get_text(props.get("答案")) or self._get_text(props.get("回答"))
+                    if q:
+                        faqs.append((q, a or ""))
+                if not resp.get("has_more"):
+                    break
+                cursor = resp.get("next_cursor")
+            # Deduplicate
+            unique = []
+            seen = set()
+            for q, a in faqs:
+                key = (q.strip(), (a or "").strip())
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append((q.strip(), (a or "").strip()))
+            return unique
         except Exception as e:
-            logger.error("Failed to fetch Notion page: %s", e)
-            html = ""
-        finally:
-            if close_session:
-                await session.close()
-
-        if not html:
+            logger.error("Error querying Notion: %s", e)
             return []
 
-        pairs = self._parse_table_pairs(html)
-        if pairs:
-            return pairs
-        return self._parse_text_pairs(html)
+    def _extract_database_id(self, value: str) -> Optional[str]:
+        # Accept raw database_id or notion URL; database id is last 32 chars alphanumeric with dashes removed in API
+        m = re.search(r"([0-9a-fA-F]{32})", value.replace("-", ""))
+        if m:
+            return m.group(1)
+        return None
 
-    def _parse_table_pairs(self, html: str) -> List[Tuple[str, str]]:
-        from bs4 import BeautifulSoup  # lazy import
-
-        soup = BeautifulSoup(html, "html.parser")
-        pairs: List[Tuple[str, str]] = []
-
-        for table in soup.find_all("table"):
-            # Try to detect header columns resembling question/answer
-            header_cells = table.find("thead")
-            q_idx, a_idx = -1, -1
-            if header_cells:
-                headers = [c.get_text(strip=True) for c in header_cells.find_all("th")]
-                for idx, text in enumerate(headers):
-                    lt = text.lower()
-                    if q_idx == -1 and ("question" in lt or "問題" in lt):
-                        q_idx = idx
-                    if a_idx == -1 and ("answer" in lt or "回答" in lt or "答案" in lt):
-                        a_idx = idx
-            # Fallback: assume first two columns
-            if q_idx == -1 or a_idx == -1:
-                q_idx, a_idx = 0, 1
-
-            body = table.find("tbody") or table
-            for tr in body.find_all("tr"):
-                cells = [c.get_text("\n", strip=True) for c in tr.find_all(["td", "th"])]
-                if len(cells) < max(q_idx, a_idx) + 1:
-                    continue
-                question = cells[q_idx].strip()
-                answer = cells[a_idx].strip() if a_idx < len(cells) else ""
-                if question:
-                    pairs.append((question, answer))
-        return self._dedupe_pairs(pairs)
-
-    def _parse_text_pairs(self, html: str) -> List[Tuple[str, str]]:
-        # Extremely simple heuristic: look for lines like "Q:" and "A:" or bullet pairs
-        text = re.sub(r"<[^>]+>", "\n", html)
-        text = re.sub(r"\n+", "\n", text)
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-
-        pairs: List[Tuple[str, str]] = []
-        current_q: Optional[str] = None
-        current_a_parts: List[str] = []
-        for ln in lines:
-            low = ln.lower()
-            if re.match(r"^(q[:：]|問題[:：])", low):
-                # flush previous
-                if current_q is not None:
-                    pairs.append((current_q, "\n".join(current_a_parts).strip()))
-                    current_a_parts = []
-                current_q = re.sub(r"^(q[:：]|問題[:：])\s*", "", ln, flags=re.IGNORECASE)
-            elif re.match(r"^(a[:：]|答案[:：]|回答[:：])", low):
-                current_a_parts.append(re.sub(r"^(a[:：]|答案[:：]|回答[:：])\s*", "", ln, flags=re.IGNORECASE))
-            elif current_q is not None:
-                current_a_parts.append(ln)
-        if current_q is not None:
-            pairs.append((current_q, "\n".join(current_a_parts).strip()))
-        return self._dedupe_pairs(pairs)
-
-    def _dedupe_pairs(self, pairs: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
-        seen = set()
-        unique: List[Tuple[str, str]] = []
-        for q, a in pairs:
-            key = (q.strip(), a.strip())
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append((q.strip(), a.strip()))
-        return unique
+    def _get_text(self, prop: Optional[Dict[str, Any]]) -> str:
+        if not prop or "type" not in prop:
+            return ""
+        t = prop["type"]
+        try:
+            if t == "title":
+                return " ".join([r.get("plain_text", "") for r in prop.get("title", [])]).strip()
+            if t == "rich_text":
+                return " ".join([r.get("plain_text", "") for r in prop.get("rich_text", [])]).strip()
+        except Exception:
+            return ""
+        return ""
 
 
 # -----------------------------
-# Discord UI View
+# Discord UI Views
 # -----------------------------
 
 
 class MarkDoneView(discord.ui.View):
-    """Persistent view with a single "標記已完成" button (static custom_id)."""
+    """Compatibility persistent view for legacy single-button messages."""
 
     def __init__(self, *, timeout: Optional[float] = None):
         super().__init__(timeout=timeout)
@@ -213,7 +173,7 @@ class MarkDoneView(discord.ui.View):
     @discord.ui.button(label="標記已完成", style=discord.ButtonStyle.primary, custom_id="faq_done")
     async def mark_done(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send("此為持久化註冊用視圖。", ephemeral=True)
+        await interaction.followup.send("請使用最新的 FAQ 動作按鈕。", ephemeral=True)
 
 
 # -----------------------------
@@ -230,7 +190,8 @@ class FaqHelperModule(ModuleBase):
         self._events: List[FaqEventConfig] = []
         self._channel_map: Dict[int, FaqEventConfig] = {}
         self._ai_agent = None
-        self._scraper = NotionPublicFaq()
+        # Notion client will be created per-event using JSON-provided key
+        self._notion = None
 
     async def setup(self) -> None:
         try:
@@ -244,9 +205,8 @@ class FaqHelperModule(ModuleBase):
             # Prepare AI agent (general agent)
             self._ai_agent = await create_general_ai_agent(self.config)
 
-            # Register persistent view so existing messages' buttons remain active after restart
-            # Register persistent view with static custom_id so buttons stay active after restarts
-            self.bot.add_view(MarkDoneRuntime(self))
+            # Register persistent views so buttons remain active after restart
+            self.bot.add_view(FAQActionsRuntime(self))
 
             # Listen to message events
             self.bot.add_listener(self.on_message, "on_message")
@@ -295,8 +255,9 @@ class FaqHelperModule(ModuleBase):
 
     async def _process_question_in_thread(self, origin_message: discord.Message, thread: discord.Thread, event_cfg: FaqEventConfig):
         user_question = origin_message.content.strip()
-        # Scrape Notion
-        pairs = await self._scraper.fetch_pairs(event_cfg.notion_page_url)
+        # Fetch FAQ via Notion API using per-event key
+        notion = NotionAPIFaq(event_cfg.notion_api_key)
+        pairs = await notion.fetch_pairs(event_cfg.notion_page_url)
 
         matched_answer: Optional[str] = None
         matched_question: Optional[str] = None
@@ -311,7 +272,8 @@ class FaqHelperModule(ModuleBase):
             logger.info("No FAQ pairs parsed from Notion page")
 
         # Compose response and UI
-        view = self._build_runtime_view()
+        # If找到匹配，會顯示含反饋的按鈕；否則僅提供標記完成
+        actions_view = self._build_actions_view(has_match=bool(matched_answer))
 
         if matched_answer:
             # Mark with an informative emoji (not checkmark)
@@ -320,20 +282,19 @@ class FaqHelperModule(ModuleBase):
             except Exception:
                 pass
 
-            embed = discord.Embed(title="可能的解答", description=matched_answer, colour=discord.Colour.blurple())
+            embed = discord.Embed(title="智能解答", description=matched_answer, colour=discord.Colour.blurple())
             embed.add_field(name="相關問題", value=matched_question or "N/A", inline=False)
             embed.set_footer(text=f"{event_cfg.name} · FAQ 自動回覆")
-            await thread.send(content=f"{origin_message.author.mention} 我找到可能的答案：", embed=embed, view=view)
+            await thread.send(content=f"{origin_message.author.mention} 我找到可能的答案：\n若已解決請按下方按鈕，若需要更多協助也請回報。", embed=embed, view=actions_view)
         else:
             mention = f"<@&{event_cfg.staff_role_id}>"
             await thread.send(content=(
                 f"{origin_message.author.mention} 我暫時找不到合適答案，已通知 {mention} 協助回覆。\n"
                 "按下下方按鈕可在問題解決後標記完成。"
-            ), view=view)
+            ), view=actions_view)
 
-    def _build_runtime_view(self) -> discord.ui.View:
-        # Use static custom_id; context is derived at click time from thread/channel
-        return MarkDoneRuntime(self)
+    def _build_actions_view(self, *, has_match: bool) -> discord.ui.View:
+        return FAQActionsRuntime(self, include_feedback=has_match)
 
     async def _semantic_pick(self, user_question: str, pairs: List[Tuple[str, str]]) -> Tuple[Optional[str], Optional[str]]:
         if not self._ai_agent:
@@ -381,15 +342,19 @@ class FaqHelperModule(ModuleBase):
         return None, None
 
 
-class MarkDoneRuntime(discord.ui.View):
-    """Runtime view used per-message with encoded custom_id.
+class FAQActionsRuntime(discord.ui.View):
+    """Runtime actions view with persistent custom_ids.
 
-    Button custom_id format: faq_done:{thread_id}:{origin_message_id}:{role_id}
+    Buttons:
+    - faq_done: staff or author can mark as resolved
+    - faq_feedback_resolved: author reports FAQ solved it
+    - faq_feedback_need_help: author requests more help (ping staff)
     """
 
-    def __init__(self, module: FaqHelperModule, *, timeout: Optional[float] = None):
+    def __init__(self, module: FaqHelperModule, *, include_feedback: bool = True, timeout: Optional[float] = None):
         super().__init__(timeout=timeout)
         self.module = module
+        self.include_feedback = include_feedback
 
     @discord.ui.button(label="標記已完成", style=discord.ButtonStyle.success, custom_id="faq_done")
     async def _done(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
@@ -460,6 +425,87 @@ class MarkDoneRuntime(discord.ui.View):
                 await interaction.followup.send("標記時發生錯誤，請稍後再試。", ephemeral=True)
             else:
                 await interaction.response.send_message("標記時發生錯誤，請稍後再試。", ephemeral=True)
+
+    @discord.ui.button(label="✨ 已解決問題", style=discord.ButtonStyle.primary, custom_id="faq_feedback_resolved")
+    async def _feedback_resolved(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        try:
+            if not self.include_feedback:
+                await interaction.response.send_message("此按鈕目前不可用。", ephemeral=True)
+                return
+            if not isinstance(interaction.channel, discord.Thread):
+                await interaction.response.send_message("請在討論串內操作。", ephemeral=True)
+                return
+            origin = None
+            try:
+                origin = await interaction.channel.starter_message()
+            except Exception:
+                origin = None
+            if origin is None:
+                await interaction.response.send_message("找不到原始訊息。", ephemeral=True)
+                return
+            if interaction.user.id != origin.author.id:
+                await interaction.response.send_message("只有提問者可以回報已解決。", ephemeral=True)
+                return
+            # Reuse _done
+            await self._done.callback(self, interaction)  # type: ignore
+        except Exception as e:
+            logger.error("FAQ feedback resolved failed: %s", e)
+            if interaction.response.is_done():
+                await interaction.followup.send("處理失敗，請稍後重試。", ephemeral=True)
+            else:
+                await interaction.response.send_message("處理失敗，請稍後重試。", ephemeral=True)
+
+    @discord.ui.button(label="💭 需要更多協助", style=discord.ButtonStyle.secondary, custom_id="faq_feedback_need_help")
+    async def _feedback_need_help(self, interaction: discord.Interaction, button: discord.ui.Button):  # type: ignore[override]
+        try:
+            if not self.include_feedback:
+                await interaction.response.send_message("此按鈕目前不可用。", ephemeral=True)
+                return
+            if not isinstance(interaction.channel, discord.Thread):
+                await interaction.response.send_message("請在討論串內操作。", ephemeral=True)
+                return
+            thread = interaction.channel
+            parent = thread.parent
+            if parent is None:
+                await interaction.response.send_message("找不到父頻道。", ephemeral=True)
+                return
+            origin = None
+            try:
+                origin = await thread.starter_message()
+            except Exception:
+                origin = None
+            if origin is None:
+                await interaction.response.send_message("找不到原始訊息。", ephemeral=True)
+                return
+            if interaction.user.id != origin.author.id:
+                await interaction.response.send_message("只有提問者可以回報需要協助。", ephemeral=True)
+                return
+
+            event_cfg = self.module._channel_map.get(parent.id)
+            staff_mention = f"<@&{event_cfg.staff_role_id}>" if event_cfg else "工作人員"
+
+            # Disable feedback buttons only
+            for ch in self.children:
+                if isinstance(ch, discord.ui.Button) and ch.custom_id in {"faq_feedback_resolved", "faq_feedback_need_help"}:
+                    ch.disabled = True
+            if interaction.response.is_done():
+                await interaction.followup.edit_message(interaction.message.id, view=self)
+            else:
+                await interaction.response.edit_message(view=self)
+
+            try:
+                await origin.add_reaction("🆘")
+            except Exception:
+                pass
+
+            await thread.send(f"{staff_mention} 提問者表示需要更多協助，請協助回覆。")
+            await interaction.followup.send("已通知工作人員協助，感謝回饋。", ephemeral=True)
+        except Exception as e:
+            logger.error("FAQ feedback need help failed: %s", e)
+            if interaction.response.is_done():
+                await interaction.followup.send("處理失敗，請稍後重試。", ephemeral=True)
+            else:
+                await interaction.response.send_message("處理失敗，請稍後重試。", ephemeral=True)
 
 
 def create_module(bot, config):

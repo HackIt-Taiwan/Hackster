@@ -174,6 +174,30 @@ class Config:
     search: SearchConfig = field(default_factory=SearchConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     
+    # FAQ / Notion
+    # Lightweight config for modules needing Notion API
+    
+@dataclass
+class FAQConfig:
+    """FAQ / Notion configuration."""
+    notion_api_key: Optional[str] = field(default_factory=lambda: os.getenv("NOTION_API_KEY"))
+    notion_version: str = field(default_factory=lambda: os.getenv("NOTION_VERSION", "2022-06-28"))
+
+
+@dataclass
+class Config:
+    """Main configuration class containing all subsystem configurations."""
+    discord: DiscordConfig
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    ai: AIConfig = field(default_factory=AIConfig)
+    moderation: ModerationConfig = field(default_factory=ModerationConfig)
+    url_safety: URLSafetyConfig = field(default_factory=URLSafetyConfig)
+    welcome: WelcomeConfig = field(default_factory=WelcomeConfig)
+    ticket: TicketConfig = field(default_factory=TicketConfig)
+    search: SearchConfig = field(default_factory=SearchConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
+    faq: FAQConfig = field(default_factory=FAQConfig)
+    
     # General settings
     debug: bool = field(default_factory=lambda: os.getenv("DEBUG", "false").lower() == "true")
     data_dir: str = field(default_factory=lambda: os.getenv("DATA_DIR", "data"))
