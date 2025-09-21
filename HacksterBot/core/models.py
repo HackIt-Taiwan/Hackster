@@ -203,3 +203,38 @@ class TicketInfo(Document):
     def __str__(self):
         return f"TicketInfo(channel_id={self.channel_id}, category={self.category}, status={self.status})"
 
+
+class FAQQuestion(Document):
+    """
+    Model for tracking FAQ questions asked in channels.
+    Used by the FAQ module to manage threads and resolution state.
+    """
+    guild_id = IntField(required=True)
+    channel_id = IntField(required=True)
+    message_id = IntField(required=True, unique=True)
+    thread_id = IntField()
+    user_id = IntField(required=True)
+    content = StringField()
+    created_at = DateTimeField(default=datetime.utcnow)
+    resolved_at = DateTimeField()
+    resolved_by = IntField()
+    resolution_type = StringField(max_length=20, default='manual')  # manual | faq
+    faq_response_at = DateTimeField()
+    faq_status = StringField(max_length=20)  # matched | insufficient
+
+    meta = {
+        'collection': 'faq_questions',
+        'indexes': [
+            'guild_id',
+            'channel_id',
+            'message_id',
+            'thread_id',
+            'created_at',
+            'resolved_at',
+            'faq_status'
+        ]
+    }
+
+    def __str__(self):
+        return f"FAQQuestion(message_id={self.message_id}, resolved_at={self.resolved_at})"
+

@@ -1,12 +1,11 @@
 {
   "events": [
     {
-      "event_id": "sample",
-      "name": "Sample Event",
-      "question_channel_id": 1412701645069877248,
+      "event_id": "daydream_taiwan",
+      "name": "Daydream Taiwan",
+      "question_channel_id": 1412675505081159802,
       "staff_role_id": 1399000260042428526,
-      "notion_page_url": "https://www.notion.so/hackittw/FAQ-26359188ed5280e7b794c31ffbb7d05d",
-      "notion_api_key": "PUT_YOUR_NOTION_KEY_HERE"
+      "notion_page_id": "26359188ed5281e7ad46d33bd7461bf9"
     }
   ]
 }

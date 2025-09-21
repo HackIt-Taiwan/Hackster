@@ -10,7 +10,15 @@ from typing import AsyncGenerator, Optional, TYPE_CHECKING
 
 import discord
 
-from config.settings import MESSAGE_TYPES, AI_MAX_RETRIES, AI_RETRY_DELAY, RATE_LIMIT_WINDOW, RATE_LIMIT_MAX_MESSAGES
+from config.settings import (
+    MESSAGE_TYPES,
+    AI_MAX_RETRIES,
+    AI_RETRY_DELAY,
+    RATE_LIMIT_WINDOW,
+    RATE_LIMIT_MAX_MESSAGES,
+    CHAT_HISTORY_TARGET_CHARS,
+    CHAT_HISTORY_MAX_MESSAGES,
+)
 from .services.ai_select import create_primary_agent, create_general_ai_agent
 from .classifiers.message_classifier import MessageClassifier
 from .services.search import SearchService
@@ -130,6 +138,61 @@ class AIHandler:
         
         return response
     
+    async def _build_channel_context(self, message: discord.Message) -> Optional[str]:
+        """
+        Build recent channel conversation context prior to the current message.
+        
+        Args:
+            message: Current Discord message
+        
+        Returns:
+            A formatted context string or None when no useful context is found.
+        """
+        try:
+            # Fetch recent messages before the current one
+            collected: list[discord.Message] = []
+            async for m in message.channel.history(limit=CHAT_HISTORY_MAX_MESSAGES + 10, before=message):
+                # Skip system messages without content and messages with no content/attachments
+                has_text = bool(m.content and m.content.strip())
+                has_attachments = bool(getattr(m, "attachments", None))
+                if not has_text and not has_attachments:
+                    continue
+                collected.append(m)
+
+            if not collected:
+                return None
+
+            # Oldest to newest
+            collected.reverse()
+
+            # Assemble lines until reaching target character budget
+            lines: list[str] = []
+            total_chars = 0
+            for m in collected:
+                author = m.author.display_name if hasattr(m.author, "display_name") else str(m.author)
+                text = m.clean_content.strip() if m.content else ""
+                # Represent attachments succinctly
+                if getattr(m, "attachments", None):
+                    attach_parts = [f"[{att.filename}]" for att in m.attachments]
+                    text = (text + (" " if text else "")) + " ".join(attach_parts)
+
+                if not text:
+                    continue
+
+                line = f"{author}: {text}"
+                if total_chars + len(line) > CHAT_HISTORY_TARGET_CHARS and lines:
+                    break
+                lines.append(line)
+                total_chars += len(line)
+
+            if not lines:
+                return None
+
+            return "\n".join(lines)
+        except Exception as e:
+            self.logger.warning(f"Failed to build channel context: {e}")
+            return None
+    
     async def handle_message(self, message: discord.Message) -> None:
         """
         Handle an incoming message for AI processing.
@@ -162,6 +225,9 @@ class AIHandler:
                 # Send initial reply message that we'll edit with streaming content
                 reply_message = await message.reply("🤔 思考中...")
                 
+                # Build recent conversation context from channel
+                context_text = await self._build_channel_context(message)
+                
                 # Get AI response with streaming
                 response_chunks = []
                 current_response = ""
@@ -169,6 +235,7 @@ class AIHandler:
                 
                 async for chunk in self.get_streaming_response(
                     content,
+                    context=context_text,
                     user_id=message.author.id,
                     channel_id=message.channel.id,
                     guild_id=getattr(message.guild, 'id', None)
@@ -348,20 +415,43 @@ class AIHandler:
             # Select appropriate agent
             if message_type == MESSAGE_TYPES['SEARCH']:
                 # Use search service for search queries
-                search_results = await self._search.search(message)
+                # Prefer formatted search context
+                search_context_text = await self._search.get_search_context(message)
                 
                 # Use general agent with search context
                 agent = self._general_agent
-                message_with_context = f"根據以下搜尋結果回答問題：\n\n{search_results}\n\n問題：{message}"
+                prefix = ""
+                if context:
+                    prefix = (
+                        "請結合以下聊天上下文（由舊到新）與搜尋結果回答，若無關請忽略上下文：\n"
+                        f"{context}\n---\n"
+                    )
+                search_block = search_context_text or "(沒有可用的搜尋結果)"
+                message_with_context = (
+                    f"{prefix}根據以下搜尋結果回答問題：\n\n{search_block}\n\n問題：{message}"
+                )
                 self.logger.info("Using general agent with search results")
             elif message_type == MESSAGE_TYPES['GENERAL']:
-                agent = self._general_agent
-                message_with_context = message
-                self.logger.info("Using general agent")
+                # Prefer crazy agent for general messages as requested
+                agent = self._crazy_agent
+                if context:
+                    message_with_context = (
+                        "請參考這段最近對話（由舊到新）進行自然聊天，若無關可忽略：\n"
+                        f"{context}\n---\n當前訊息：{message}"
+                    )
+                else:
+                    message_with_context = message
+                self.logger.info("Using crazy agent for general message")
             else:
                 # Default to crazy agent for chat
                 agent = self._crazy_agent
-                message_with_context = message
+                if context:
+                    message_with_context = (
+                        "請參考這段最近對話（由舊到新）進行自然聊天，若無關可忽略：\n"
+                        f"{context}\n---\n當前訊息：{message}"
+                    )
+                else:
+                    message_with_context = message
                 self.logger.info("Using crazy agent")
             
             # Get response with retry logic
