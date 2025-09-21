@@ -1,0 +1,41 @@
+.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/*.swp
+**/*.tmp
+**/.mypy_cache/
+**/.pytest_cache/
+**/.ruff_cache/
+
+# Python virtual envs
+venv/
+.venv/
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Node
+node_modules/
+
+# Test and logs
+**/tests/
+**/test_*
+**/*.log
+logs/
+
+# Data (keep inside container volume instead)
+data/
+HacksterBot/data/
+
+# Local env files (provide at runtime via --env-file)
+HacksterBot/.env
+.env
+.env.*
+
+
